@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+applications_dir=${XDG_DATA_HOME:-"$HOME/.local/share"}/applications
+mkdir -p "$applications_dir"
+cp "$project_dir/zer0-gopass-tui.desktop" "$applications_dir/zer0-gopass-tui.desktop"
+echo "Кнопка Zer0 Gopass TUI добавлена в меню приложений."

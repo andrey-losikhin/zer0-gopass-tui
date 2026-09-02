@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$project_dir"
+port=${ZER0_GOPASS_BITWARDEN_PORT:-8088}
+base_url="http://127.0.0.1:$port"
+
+if curl -fsS "$base_url/status" 2>/dev/null | grep -q '"status":"unlocked"'; then
+	ZER0_GOPASS_BITWARDEN_URL=$base_url exec go run ./cmd/zer0-gopass-tui
+fi
+if curl -fsS "$base_url/status" >/dev/null 2>&1; then
+	echo "Порт $port занят заблокированным bw serve. Остановите его и повторите запуск." >&2
+	exit 1
+fi
+
+bw_session=$(bw unlock --raw) || exit 1
+if [ -z "$bw_session" ]; then
+	echo "Bitwarden не вернул ключ сессии." >&2
+	exit 1
+fi
+
+BW_SESSION=$bw_session bw serve --hostname 127.0.0.1 --port "$port" >/dev/null 2>&1 &
+server_pid=$!
+cleanup() {
+	kill "$server_pid" 2>/dev/null || true
+}
+trap cleanup EXIT HUP INT TERM
+
+attempt=0
+while [ "$attempt" -lt 25 ]; do
+	if curl -fsS "$base_url/status" 2>/dev/null | grep -q '"status":"unlocked"'; then
+		ZER0_GOPASS_BITWARDEN_URL=$base_url go run ./cmd/zer0-gopass-tui
+		exit $?
+	fi
+	attempt=$((attempt + 1))
+	sleep 0.2
+done
+
+echo "Не удалось запустить разблокированный bw serve на порту $port." >&2
+exit 1
