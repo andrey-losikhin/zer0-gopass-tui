@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"zer0-gopass-tui/internal/app"
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/app"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 func main() {

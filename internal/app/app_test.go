@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 func TestRunQuitsOnQ(t *testing.T) {

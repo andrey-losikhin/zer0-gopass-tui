@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 // Run запускает TUI: строит Model на основе gopass-зависимостей и передаёт управление

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 type bitwardenSyncer interface {

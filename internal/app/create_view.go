@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 func (c createModel) view() string {

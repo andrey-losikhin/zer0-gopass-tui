@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 func TestWorkspaceUsesTwoBorderedPanels(t *testing.T) {

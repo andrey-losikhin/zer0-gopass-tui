@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 func TestCardMutationReloadsReaderAndList(t *testing.T) {

@@ -1,1 +1,16 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.out
+*.test
+coverage.txt
+
+# Local tooling and editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Personal planning notes
 .docs/

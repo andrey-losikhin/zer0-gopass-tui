@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 func TestFilterEntries(t *testing.T) {

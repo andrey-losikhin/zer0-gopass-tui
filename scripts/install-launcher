@@ -3,6 +3,20 @@ set -eu
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 applications_dir=${XDG_DATA_HOME:-"$HOME/.local/share"}/applications
-mkdir -p "$applications_dir"
-cp "$project_dir/zer0-gopass-tui.desktop" "$applications_dir/zer0-gopass-tui.desktop"
-echo "Кнопка Zer0 Gopass TUI добавлена в меню приложений."
+binary_dir=${XDG_BIN_HOME:-"$HOME/.local/bin"}
+binary_path=$binary_dir/zer0-gopass-tui
+desktop_path=$applications_dir/zer0-gopass-tui.desktop
+
+case $binary_path in
+	*[!A-Za-z0-9_./-]*)
+		echo "Installation path contains characters unsupported by this launcher: $binary_path" >&2
+		exit 1
+		;;
+esac
+
+mkdir -p "$applications_dir" "$binary_dir"
+(cd "$project_dir" && go build -o "$binary_path" ./cmd/zer0-gopass-tui)
+sed "s|^Exec=.*|Exec=$binary_path|" "$project_dir/zer0-gopass-tui.desktop" >"$desktop_path"
+chmod 0644 "$desktop_path"
+
+echo "Installed $binary_path and $desktop_path"

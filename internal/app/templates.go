@@ -1,6 +1,6 @@
 package app
 
-import "zer0-gopass-tui/internal/gopass"
+import "github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 
 var addableKinds = []gopass.FieldKind{
 	"password", "username", "url", "email", "notes", "host", "port",

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"slices"
 
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 const bitwardenManagedField = "zer0-gopass-managed"

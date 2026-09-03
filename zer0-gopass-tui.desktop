@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=Zer0 Gopass TUI
-Comment=Пароли gopass с синхронизацией Bitwarden
-Exec=/home/zer0/Projects/pet-projects/zer0-gopass-tui/scripts/run-with-bitwarden
+Comment=Manage structured credentials in gopass
+Exec=zer0-gopass-tui
 Icon=dialog-password
 Terminal=true
 Categories=Utility;Security;

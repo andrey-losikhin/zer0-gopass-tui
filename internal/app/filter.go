@@ -3,7 +3,7 @@ package app
 import (
 	"strings"
 
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 // filterEntries возвращает подмножество entries, чьи Path содержат query как

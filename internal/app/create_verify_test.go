@@ -3,7 +3,7 @@ package app
 import (
 	"testing"
 
-	"zer0-gopass-tui/internal/gopass"
+	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
 func TestCreateSuccessIsReloadedFromBackend(t *testing.T) {
