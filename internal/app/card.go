@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
@@ -19,6 +21,7 @@ const (
 	cardCustom
 	cardConfirmField
 	cardConfirmEntry
+	cardRename
 )
 
 type cardEvent int
@@ -28,6 +31,7 @@ const (
 	cardLeave
 	cardDeleted
 	cardMigrate
+	cardClone
 )
 
 type fieldsLoadedMsg struct {
@@ -70,6 +74,8 @@ type cardModel struct {
 	fatal    bool
 	adding   bool
 	err      error
+	rename   textinput.Model
+	age      string
 }
 
 func newCard(ctx context.Context, reader gopass.Reader, writer gopass.Writer, entry string) cardModel {
@@ -94,9 +100,17 @@ func (c cardModel) update(msg tea.Msg) (cardModel, tea.Cmd, cardEvent) {
 		c.legacy = errors.Is(msg.err, gopass.ErrManifestNotFound)
 		c.fatal = msg.err != nil && !c.legacy
 		if msg.err == nil {
+			// Preview показывает только manifest и public values; secret-значения
+			// расшифровываются лишь по явному reveal (r) или редактированию (e).
 			c.set = msg.set
-			c.loading = true
-			return c, loadBundleValuesCmd(c.ctx, c.reader, c.entry, c.set), cardStay
+			if hasPasswordField(c.set) {
+				return c, loadAgeCmd(c.ctx, c.reader, c.entry), cardStay
+			}
+		}
+		return c, nil, cardStay
+	case ageLoadedMsg:
+		if msg.entry == c.entry && msg.err == nil {
+			c.age = passwordAgeText(msg.at, msg.source, time.Now())
 		}
 		return c, nil, cardStay
 	case revealMsg:
@@ -104,6 +118,14 @@ func (c cardModel) update(msg tea.Msg) (cardModel, tea.Cmd, cardEvent) {
 		c.err = msg.err
 		if msg.err == nil {
 			c.revealed[msg.fieldID] = msg.value
+			if c.hasRevealedTOTP() {
+				return c, totpTickCmd(), cardStay
+			}
+		}
+		return c, nil, cardStay
+	case totpTickMsg:
+		if c.hasRevealedTOTP() {
+			return c, totpTickCmd(), cardStay
 		}
 		return c, nil, cardStay
 	case editBundleLoadedMsg:
@@ -113,7 +135,7 @@ func (c cardModel) update(msg tea.Msg) (cardModel, tea.Cmd, cardEvent) {
 			c.editor = newCreate(c.ctx, c.writer, c.entry)
 			c.editor.revision = c.set.Revision
 			c.editor.syncBitwarden = c.set.BitwardenSync
-			c.editor.fields = fullEditorFields(msg.fields)
+			c.editor.setFields(msg.fields)
 			c.editor.cursor = 1
 			c.editor.editing = false
 			c.mode = cardEditAll
@@ -147,8 +169,16 @@ func (c cardModel) update(msg tea.Msg) (cardModel, tea.Cmd, cardEvent) {
 	return c, nil, cardStay
 }
 
+func (c cardModel) acceptingText() bool {
+	return c.mode == cardEdit || c.mode == cardRename || (c.mode == cardEditAll && c.editor.acceptingText())
+}
+
 func (c cardModel) updateKey(msg tea.KeyMsg) (cardModel, tea.Cmd, cardEvent) {
 	if c.loading {
+		// A pending decrypt may wait on pinentry; Esc must still leave the card.
+		if msg.Type == tea.KeyEsc {
+			return c, nil, cardLeave
+		}
 		return c, nil, cardStay
 	}
 	if c.fatal {
@@ -174,6 +204,7 @@ func (c cardModel) updateKey(msg tea.KeyMsg) (cardModel, tea.Cmd, cardEvent) {
 		c.editor = editor
 		if done {
 			c.mode = cardView
+			c.editor = createModel{}
 		}
 		return c, cmd, cardStay
 	}
@@ -182,6 +213,9 @@ func (c cardModel) updateKey(msg tea.KeyMsg) (cardModel, tea.Cmd, cardEvent) {
 	}
 	if c.mode == cardConfirmField || c.mode == cardConfirmEntry {
 		return c.updateConfirm(msg)
+	}
+	if c.mode == cardRename {
+		return c.updateRename(msg)
 	}
 	return c.updateView(msg)
 }

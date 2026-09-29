@@ -18,6 +18,18 @@ import (
 
 type bitwardenSyncer interface {
 	Upsert(context.Context, string, []gopass.FieldValue) error
+	// Find ищет элемент, связанный с записью gopass полем zer0-gopass-path.
+	Find(context.Context, string) (bitwardenMatch, bool, error)
+	// Delete переносит элемент в корзину Bitwarden (soft delete).
+	Delete(context.Context, string) error
+	// Relink переносит связь элемента со старого пути записи на новый.
+	Relink(context.Context, string, string) error
+}
+
+// bitwardenMatch — то, что показывается пользователю перед удалением.
+type bitwardenMatch struct {
+	ID   string
+	Name string
 }
 
 type bitwardenClient struct {
@@ -118,11 +130,29 @@ func (b bitwardenClient) ensureUnlocked(ctx context.Context) error {
 	return nil
 }
 
+// find сначала использует серверный поиск `?search=` (он сравнивает имя
+// элемента, которое совпадает с путём записи) и лишь при отсутствии точного
+// совпадения по zer0-gopass-path скачивает полный список: элемент мог быть
+// переименован в Bitwarden.
 func (b bitwardenClient) find(ctx context.Context, path string) (map[string]any, error) {
+	items, err := b.listItems(ctx, "/list/object/items?search="+url.QueryEscape(path))
+	if err != nil {
+		return nil, err
+	}
+	if item := matchBitwardenPath(items, path); item != nil {
+		return item, nil
+	}
+	items, err = b.listItems(ctx, "/list/object/items")
+	if err != nil {
+		return nil, err
+	}
+	return matchBitwardenPath(items, path), nil
+}
+
+func (b bitwardenClient) listItems(ctx context.Context, endpoint string) ([]map[string]any, error) {
 	var response struct {
 		Data json.RawMessage `json:"data"`
 	}
-	endpoint := "/list/object/items"
 	if err := b.request(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
 		return nil, err
 	}
@@ -136,17 +166,78 @@ func (b bitwardenClient) find(ctx context.Context, path string) (map[string]any,
 		}
 		items = nested.Data
 	}
+	return items, nil
+}
+
+func matchBitwardenPath(items []map[string]any, path string) map[string]any {
 	for _, item := range items {
 		if fields, ok := item["fields"].([]any); ok {
 			for _, raw := range fields {
 				field, _ := raw.(map[string]any)
 				if field["name"] == "zer0-gopass-path" && field["value"] == path {
-					return item, nil
+					return item
 				}
 			}
 		}
 	}
-	return nil, nil
+	return nil
+}
+
+func (b bitwardenClient) Find(ctx context.Context, path string) (bitwardenMatch, bool, error) {
+	if b.configErr != nil {
+		return bitwardenMatch{}, false, b.configErr
+	}
+	if err := b.ensureUnlocked(ctx); err != nil {
+		return bitwardenMatch{}, false, err
+	}
+	item, err := b.find(ctx, path)
+	if err != nil || item == nil {
+		return bitwardenMatch{}, false, err
+	}
+	id, _ := item["id"].(string)
+	name, _ := item["name"].(string)
+	if id == "" {
+		return bitwardenMatch{}, false, fmt.Errorf("Bitwarden: item without id")
+	}
+	return bitwardenMatch{ID: id, Name: name}, true, nil
+}
+
+func (b bitwardenClient) Delete(ctx context.Context, id string) error {
+	if b.configErr != nil {
+		return b.configErr
+	}
+	if id == "" {
+		return fmt.Errorf("Bitwarden: empty item id")
+	}
+	if err := b.ensureUnlocked(ctx); err != nil {
+		return err
+	}
+	return b.request(ctx, http.MethodDelete, "/object/item/"+url.PathEscape(id), nil, nil)
+}
+
+func (b bitwardenClient) Relink(ctx context.Context, oldPath, newPath string) error {
+	if b.configErr != nil {
+		return b.configErr
+	}
+	if err := b.ensureUnlocked(ctx); err != nil {
+		return err
+	}
+	item, err := b.find(ctx, oldPath)
+	if err != nil || item == nil {
+		return err
+	}
+	id, _ := item["id"].(string)
+	if item["name"] == oldPath {
+		item["name"] = newPath
+	}
+	if fields, ok := item["fields"].([]any); ok {
+		for _, raw := range fields {
+			if field, _ := raw.(map[string]any); field["name"] == "zer0-gopass-path" {
+				field["value"] = newPath
+			}
+		}
+	}
+	return b.request(ctx, http.MethodPut, "/object/item/"+url.PathEscape(id), item, nil)
 }
 
 func (b bitwardenClient) request(ctx context.Context, method, endpoint string, body, target any) error {

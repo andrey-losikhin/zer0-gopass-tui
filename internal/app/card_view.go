@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
@@ -34,6 +35,13 @@ func (c cardModel) viewRows(rows int) string {
 	if c.mode == cardKinds || c.mode == cardCustom {
 		return c.kindsView()
 	}
+	if c.mode == cardRename {
+		prefix := "Запись: " + c.entry + "\n\n"
+		if c.err != nil {
+			prefix += fmt.Sprintf("Ошибка: %v\n\n", c.err)
+		}
+		return prefix + c.rename.View() + "\n\nEnter переименовать  Esc отмена\n"
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Запись: %s\n\n", c.entry)
 	if c.err != nil {
@@ -51,9 +59,12 @@ func (c cardModel) viewRows(rows int) string {
 		}
 		value := field.Value
 		if field.Visibility == gopass.VisibilitySecret {
-			value = "••••••••"
+			value = secretMask
 			if revealed, ok := c.revealed[field.ID]; ok {
 				value = compactValue(revealed)
+				if field.Kind == "totp_secret" {
+					value = totpDisplay(revealed, time.Now())
+				}
 			}
 		} else {
 			value = compactValue(value)
@@ -63,12 +74,15 @@ func (c cardModel) viewRows(rows int) string {
 	if end < len(c.set.Fields) {
 		b.WriteString("  ↓ ещё поля\n")
 	}
+	if c.age != "" {
+		b.WriteString("\n" + mutedStyle.Render(c.age) + "\n")
+	}
 	if c.mode == cardConfirmField {
 		b.WriteString("\nУдалить выбранное поле? y/N\n")
 	} else if c.mode == cardConfirmEntry {
 		b.WriteString("\nУдалить всю запись? y/N\n")
 	} else {
-		b.WriteString("\nr показать  e изменить  a добавить  d удалить поле  x удалить запись  Esc назад\n")
+		b.WriteString("\nr показать  e изменить  a добавить  d удалить поле  x удалить запись\nR переименовать  c клонировать  Esc назад\n")
 	}
 	return b.String()
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -11,19 +12,58 @@ import (
 	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
-func TestCreateShowsAllStandardFieldsWithoutTemplates(t *testing.T) {
+func TestCreateShowsStarterFieldsAndAddsMissingKinds(t *testing.T) {
 	c := newCreate(context.Background(), &fakeWriter{}, "")
-	if len(c.fields) != 20 {
-		t.Fatalf("field count = %d, want 20", len(c.fields))
+	if len(c.fields) != 4 || c.fields[0].Kind != "password" || c.fields[1].Kind != "username" {
+		t.Fatalf("starter fields = %#v", c.fields)
 	}
-	for _, field := range c.fields {
-		if field.Kind == "custom" || field.Value != "" {
-			t.Fatalf("unexpected initial field: %#v", field)
+	c.editing = false
+	c, _, _ = c.update(keyRunes("a"))
+	if !c.adder.active || len(c.adder.kinds) != 17 {
+		t.Fatalf("adder kinds = %v", c.adder.kinds)
+	}
+	for _, kind := range c.adder.kinds {
+		if kind == "password" || kind == "notes" {
+			t.Fatalf("present kind %s offered again", kind)
 		}
 	}
-	view := c.view()
-	if view == "" || c.path.Placeholder != "категория/аккаунт" {
-		t.Fatalf("view=%q placeholder=%q", view, c.path.Placeholder)
+	for c.adder.kinds[c.adder.cursor] != "totp_secret" {
+		c, _, _ = c.update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	c, _, _ = c.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if c.adder.active || len(c.fields) != 5 || c.fields[4].Kind != "totp_secret" || !c.editing || c.cursor != 5 {
+		t.Fatalf("field not appended for editing: fields=%d cursor=%d editing=%v", len(c.fields), c.cursor, c.editing)
+	}
+}
+
+func TestCreateAddsCustomFieldWithUniqueName(t *testing.T) {
+	c := newCreate(context.Background(), &fakeWriter{}, "entry")
+	c, _, _ = c.update(keyRunes("a"))
+	c.adder.cursor = len(c.adder.kinds) - 1
+	c, _, _ = c.update(tea.KeyMsg{Type: tea.KeyEnter})
+	c.adder.name.SetValue("Username")
+	c, _, _ = c.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if c.adder.err == nil {
+		t.Fatal("duplicate custom name accepted")
+	}
+	c.adder.name.SetValue("PIN")
+	c, _, _ = c.update(tea.KeyMsg{Type: tea.KeyEnter})
+	c, _, _ = c.update(keyRunes("v"))
+	c, _, _ = c.update(tea.KeyMsg{Type: tea.KeyEnter})
+	last := c.fields[len(c.fields)-1]
+	if last.Kind != "custom" || last.Name != "PIN" || last.Visibility != gopass.VisibilitySecret {
+		t.Fatalf("custom field = %#v", last)
+	}
+}
+
+func TestSecretMaskDoesNotRevealLength(t *testing.T) {
+	c := newCreate(context.Background(), &fakeWriter{}, "entry")
+	c.fields[0].Value = "abc"
+	short := c.view()
+	c.fields[0].Value = "a-much-longer-synthetic-secret"
+	long := c.view()
+	if short != long || !strings.Contains(short, secretMask) {
+		t.Fatal("mask depends on secret length")
 	}
 }
 

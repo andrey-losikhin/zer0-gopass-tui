@@ -7,6 +7,9 @@ import (
 	"github.com/andrey-losikhin/zer0-gopass-tui/internal/gopass"
 )
 
+// secretMask не зависит от длины значения, чтобы не раскрывать её.
+const secretMask = "••••••••"
+
 func (c createModel) view() string {
 	return c.viewRows(14)
 }
@@ -14,6 +17,9 @@ func (c createModel) view() string {
 func (c createModel) viewRows(rows int) string {
 	if c.generator.active {
 		return c.generator.view()
+	}
+	if c.adder.active {
+		return c.adder.view()
 	}
 	var b strings.Builder
 	title := "НОВАЯ ЗАПИСЬ"
@@ -48,7 +54,7 @@ func (c createModel) viewRows(rows int) string {
 			continue
 		}
 		if visibility == gopass.VisibilitySecret && value != "" {
-			value = strings.Repeat("•", min(12, len([]rune(value))))
+			value = secretMask
 		} else {
 			value = compactValue(value)
 		}
@@ -60,7 +66,7 @@ func (c createModel) viewRows(rows int) string {
 	if end < len(c.fields)+1 {
 		b.WriteString("  ↓ ещё поля\n")
 	}
-	b.WriteString("\nEnter ввести  Ctrl+R показать/скрыть  g генератор  ↑/↓ поле  Ctrl+S сохранить  Esc назад\n")
+	b.WriteString("\nEnter ввести  a добавить поле  Ctrl+R показать/скрыть  g генератор  ↑/↓ поле  Ctrl+S сохранить  Esc назад\n")
 	b.WriteString("Пустые поля не будут записаны.")
 	return b.String()
 }

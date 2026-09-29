@@ -10,8 +10,8 @@ func (w ExecWriter) CreateBundle(ctx context.Context, entryPath string, fields [
 	return w.createBundle(ctx, entryPath, fields, false)
 }
 
-// MigrateBundle явно создаёт bundle для существующей legacy-записи, сохраняя
-// её compatibility entry без изменения.
+// MigrateBundle явно создаёт bundle для существующей legacy-записи. В её main
+// entry меняется только первая строка, если пароль в форме отличается.
 func (w ExecWriter) MigrateBundle(ctx context.Context, entryPath string, fields []FieldValue) (FieldSet, error) {
 	return w.createBundle(ctx, entryPath, fields, true)
 }
@@ -47,7 +47,7 @@ func (w ExecWriter) createBundle(ctx context.Context, entryPath string, fields [
 	if err != nil {
 		return FieldSet{}, err
 	}
-	set, err := w.commit(ctx, manifestPath, "", Manifest{Format: manifestFormat, BundleID: bundleID}, fields, nil)
+	set, err := w.commit(ctx, manifestPath, "", Manifest{Format: manifestFormat, BundleID: bundleID}, nil, fields)
 	if err != nil {
 		return set, err
 	}
@@ -63,6 +63,15 @@ func (w ExecWriter) createBundle(ctx context.Context, entryPath string, fields [
 			}
 			return FieldSet{}, fmt.Errorf("gopass: legacy entry disappeared")
 		}
+		// Первая строка legacy-записи приводится к паролю manifest, остальные
+		// строки исходной записи сохраняются как есть. Без поля password
+		// исходная запись не трогается, чтобы миграция не стёрла её пароль.
+		if passwordOf(fields) == "" {
+			return set, nil
+		}
+		if err := w.syncCompatibility(ctx, entryPath, fields); err != nil {
+			return set, &CleanupError{Compatibility: true}
+		}
 		return set, nil
 	}
 	compatibilityExists, err = w.store().exists(ctx, entryPath)
@@ -76,7 +85,7 @@ func (w ExecWriter) createBundle(ctx context.Context, entryPath string, fields [
 		}
 		return FieldSet{}, errEntryExists
 	}
-	if err := w.store().write(ctx, entryPath, []byte("zer0-waypass field bundle")); err != nil {
+	if err := w.store().write(ctx, entryPath, compatibilityBody(passwordOf(fields))); err != nil {
 		if failed := w.rollbackCreated(ctx, manifestPath); failed > 0 {
 			return FieldSet{}, fmt.Errorf("gopass: create compatibility entry failed; cleanup of %d bundle entries failed: %w", failed, err)
 		}

@@ -44,9 +44,15 @@ func (m Model) workspaceView(detail string) string {
 		titleStyle.Render("ХРАНИЛИЩЕ") + "\n\n" + m.vaultView(contentHeight-4),
 	)
 	right := rightPanel.Width(rightWidth).Height(contentHeight).Render(detail)
-	help := mutedStyle.Render("  ←/h список • →/l форма • ↑/↓ выбрать • n новая • / поиск • d удалить • q выход")
+	help := mutedStyle.Render("  ←/h список • →/l форма • ↑/↓ выбрать • n новая • / поиск • d удалить • D дубликаты • q выход")
 	if m.notice != nil {
 		help += "  " + titleStyle.Render("✓ "+m.notice.Error())
+	}
+	if m.bwDelete != nil {
+		help = titleStyle.Render(m.bwDelete.view())
+	}
+	if m.confirmQuit {
+		help = titleStyle.Render("  Есть несохранённые изменения. Выйти без сохранения? y — да, любая клавиша — нет")
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lipgloss.JoinHorizontal(lipgloss.Top, left, right), help)
 }

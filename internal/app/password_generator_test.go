@@ -52,3 +52,38 @@ func TestCreateSecretOffersManualOrGeneratedValue(t *testing.T) {
 		t.Fatal("manual input is not available after generation")
 	}
 }
+
+func TestGeneratorPresetsAndEntropy(t *testing.T) {
+	if len(passphraseWords) != 1296 {
+		t.Fatalf("wordlist size = %d", len(passphraseWords))
+	}
+	g := newPasswordGenerator()
+	g, _, _ = g.update(keyRunes("p"))
+	if g.preset != presetPassphrase {
+		t.Fatalf("preset = %v", g.preset)
+	}
+	phrase, err := g.generate()
+	if err != nil || len(strings.Split(phrase, passphraseSeparator)) < 6 {
+		t.Fatalf("passphrase err=%v words=%d", err, len(strings.Split(phrase, passphraseSeparator)))
+	}
+	if bits := entropyBits(g); bits < 62 || bits > 62.1 {
+		t.Fatalf("passphrase entropy = %.2f, want 6*log2(1296)≈62.04", bits)
+	}
+	g, _, _ = g.update(keyRunes("p"))
+	pin, err := g.generate()
+	if err != nil || len(pin) != 6 || strings.Trim(pin, "0123456789") != "" {
+		t.Fatalf("pin length=%d err=%v", len(pin), err)
+	}
+	if bits := entropyBits(g); bits < 19.9 || bits > 20 {
+		t.Fatalf("pin entropy = %.2f", bits)
+	}
+	if !strings.Contains(g.view(), "бит") {
+		t.Fatal("entropy is not shown")
+	}
+	g, _, _ = g.update(tea.KeyMsg{Type: tea.KeyLeft})
+	g, _, _ = g.update(tea.KeyMsg{Type: tea.KeyLeft})
+	g, _, _ = g.update(tea.KeyMsg{Type: tea.KeyLeft})
+	if g.pinLength != 4 {
+		t.Fatalf("pin length lower bound = %d", g.pinLength)
+	}
+}

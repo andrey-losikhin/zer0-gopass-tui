@@ -20,3 +20,13 @@ func allStandardFields() []gopass.FieldValue {
 	}
 	return fields
 }
+
+// defaultCreateFields — стартовый набор строк новой записи.
+func defaultCreateFields() []gopass.FieldValue {
+	fields := make([]gopass.FieldValue, 0, 4)
+	for _, kind := range []gopass.FieldKind{"password", "username", "url", "notes"} {
+		field, _ := gopass.StandardField(kind)
+		fields = append(fields, field)
+	}
+	return fields
+}

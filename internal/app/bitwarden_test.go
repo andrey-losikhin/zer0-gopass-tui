@@ -22,9 +22,31 @@ func jsonResponse(body string) *http.Response {
 }
 
 type fakeBitwardenSyncer struct {
-	path   string
-	values []gopass.FieldValue
-	err    error
+	path     string
+	values   []gopass.FieldValue
+	err      error
+	match    *bitwardenMatch
+	finds    []string
+	deleted  []string
+	relinked []string
+}
+
+func (f *fakeBitwardenSyncer) Find(_ context.Context, path string) (bitwardenMatch, bool, error) {
+	f.finds = append(f.finds, path)
+	if f.match == nil {
+		return bitwardenMatch{}, false, f.err
+	}
+	return *f.match, true, f.err
+}
+
+func (f *fakeBitwardenSyncer) Delete(_ context.Context, id string) error {
+	f.deleted = append(f.deleted, id)
+	return f.err
+}
+
+func (f *fakeBitwardenSyncer) Relink(_ context.Context, oldPath, newPath string) error {
+	f.relinked = append(f.relinked, oldPath+" -> "+newPath)
+	return f.err
 }
 
 func (f *fakeBitwardenSyncer) Upsert(_ context.Context, path string, values []gopass.FieldValue) error {
@@ -211,3 +233,133 @@ func TestVerifiedCheckedCreateAutomaticallySyncsBitwarden(t *testing.T) {
 }
 
 func keyCtrlS() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyCtrlS} }
+
+func TestBitwardenFindUsesSearchBeforeFullList(t *testing.T) {
+	var queries []string
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/status":
+			return jsonResponse(`{"success":true,"data":{"template":{"status":"unlocked"}}}`), nil
+		case "/list/object/items":
+			queries = append(queries, r.URL.Query().Get("search"))
+			return jsonResponse(`{"data":{"data":[{"id":"item-id","name":"work/a","fields":[{"name":"zer0-gopass-path","value":"work/a"}]}]}}`), nil
+		}
+		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	client := bitwardenClient{baseURL: "http://bitwarden.test", client: &http.Client{Transport: transport}}
+	match, found, err := client.Find(context.Background(), "work/a")
+	if err != nil || !found || match.ID != "item-id" {
+		t.Fatalf("Find() = %#v, %v, %v", match, found, err)
+	}
+	if len(queries) != 1 || queries[0] != "work/a" {
+		t.Fatalf("list queries = %q, want one search request", queries)
+	}
+}
+
+func TestBitwardenDeleteUsesItemEndpoint(t *testing.T) {
+	var method, path string
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/status" {
+			return jsonResponse(`{"success":true,"data":{"template":{"status":"unlocked"}}}`), nil
+		}
+		method, path = r.Method, r.URL.Path
+		return jsonResponse(`{"success":true}`), nil
+	})
+	client := bitwardenClient{baseURL: "http://bitwarden.test", client: &http.Client{Transport: transport}}
+	if err := client.Delete(context.Background(), "item-id"); err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodDelete || path != "/object/item/item-id" {
+		t.Fatalf("request = %s %s", method, path)
+	}
+}
+
+func TestEntryDeleteAsksBeforeDeletingBitwardenItem(t *testing.T) {
+	m, r, _ := loadedModel(t, []gopass.Entry{{Path: "work/account"}})
+	set := testSet()
+	set.BitwardenSync = true
+	r.sets["work/account"] = set
+	syncer := &fakeBitwardenSyncer{match: &bitwardenMatch{ID: "bw-1", Name: "work/account"}}
+	m.bitwarden = syncer
+	updated, cmd := m.Update(keyRunes("d"))
+	m = updated.(Model)
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	updated, cmd = m.Update(keyRunes("y"))
+	m = updated.(Model)
+	updated, cmd = m.Update(cmd())
+	m = updated.(Model)
+	for _, msg := range drainBatch(cmd) {
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+	}
+	if len(syncer.finds) != 1 || m.bwDelete == nil || len(syncer.deleted) != 0 {
+		t.Fatalf("finds=%v prompt=%v deleted=%v", syncer.finds, m.bwDelete, syncer.deleted)
+	}
+	if !strings.Contains(m.View(), "bw-1") {
+		t.Fatal("prompt does not show what will be deleted")
+	}
+	updated, cmd = m.Update(keyRunes("y"))
+	m = updated.(Model)
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if len(syncer.deleted) != 1 || syncer.deleted[0] != "bw-1" {
+		t.Fatalf("deleted=%v", syncer.deleted)
+	}
+}
+
+func TestDeclinedBitwardenDeleteKeepsItem(t *testing.T) {
+	m, _, _ := loadedModel(t, nil)
+	syncer := &fakeBitwardenSyncer{}
+	m.bitwarden = syncer
+	updated, _ := m.Update(bitwardenFoundMsg{path: "entry", match: bitwardenMatch{ID: "bw-1", Name: "entry"}, found: true})
+	m = updated.(Model)
+	updated, cmd := m.Update(keyRunes("n"))
+	m = updated.(Model)
+	if cmd != nil || len(syncer.deleted) != 0 || m.bwDelete != nil {
+		t.Fatal("declined prompt deleted Bitwarden item")
+	}
+}
+
+func TestUnsettingSyncFlagLooksUpBitwardenItem(t *testing.T) {
+	m, r, _ := loadedModel(t, []gopass.Entry{{Path: "work/account"}})
+	syncer := &fakeBitwardenSyncer{}
+	m.bitwarden = syncer
+	set := testSet()
+	set.BitwardenSync = true
+	r.sets["work/account"] = testSet()
+	m.mode = modeCard
+	m.card = newCard(m.ctx, r, m.writer, "work/account")
+	m.card.loading = false
+	m.card.set = set
+	m.card.mode = cardEditAll
+	m.card.editor = newCreate(m.ctx, m.writer, "work/account")
+	m.card.editor.syncBitwarden = false
+	updated, verify := m.Update(createdMsg{path: "work/account"})
+	m = updated.(Model)
+	updated, find := m.Update(verify())
+	m = updated.(Model)
+	if find == nil {
+		t.Fatal("unsetting sync did not look up Bitwarden item")
+	}
+	_ = find()
+	if len(syncer.finds) != 1 {
+		t.Fatalf("finds=%v", syncer.finds)
+	}
+}
+
+// drainBatch раскрывает tea.Batch в список сообщений для синхронного теста.
+func drainBatch(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, drainBatch(c)...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}

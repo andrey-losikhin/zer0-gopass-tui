@@ -46,8 +46,21 @@ the TUI; the value is still encrypted by `gopass`.
 ## Mutation model
 
 Writes are copy-on-write: a new revision is written and verified before the
-manifest pointer changes. Cleanup failures are reported separately after a
-successful commit. Compatibility entries preserve normal `gopass` listing.
+manifest pointer changes. If the written manifest cannot be confirmed, the
+previous manifest bytes are restored on a best-effort basis; a different valid
+manifest is treated as a concurrent change and left untouched. The previous
+revision directory is removed with a single `gopass rm -r`, so an update costs
+one commit per value, one for the manifest and one for cleanup. Cleanup
+failures are reported separately after a successful commit.
+
+The compatibility (main) entry keeps normal `gopass` listing and tools working:
+its first line is the password field value and the second line is
+`zer0-waypass: field bundle`. Saves rewrite only the first line, and only when
+it differs from the manifest password; migrated legacy entries keep their other
+lines. Deletion removes the manifest first, then the bundle directory and the
+main entry; anything left behind by a failure is unreachable and is removed by
+`zer0-gopass-tui gc`. Renaming moves the manifest and main entry; value paths
+use the opaque bundle ID and stay in place.
 
 ## Release model
 

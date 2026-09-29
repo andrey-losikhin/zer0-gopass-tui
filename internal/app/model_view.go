@@ -17,6 +17,7 @@ func (m Model) listView() string {
 	if m.notice != nil {
 		detail += fmt.Sprintf("\n\n%s", mutedStyle.Render("Статус: "+m.notice.Error()))
 	}
+	detail += m.duplicates.view(len(m.entries))
 	if m.mode == modeListDelete && !m.loading && m.err == nil {
 		detail += "\n\nУдалить выбранную запись?  y — да, любая другая клавиша — нет"
 	}

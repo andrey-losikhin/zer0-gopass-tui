@@ -10,6 +10,24 @@ import (
 )
 
 func (m Model) updateCard(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if loaded, ok := msg.(entriesLoadedMsg); ok {
+		m.entries = loaded.entries
+		m.filtered = filterEntries(m.entries, m.filter.Value())
+		m.loading = false
+		for i, entry := range m.filtered {
+			if entry.Path == m.card.entry {
+				m.cursor = i
+			}
+		}
+		m.cursor = clampCursor(m.cursor, len(m.filtered))
+		return m, nil
+	}
+	if legacy, ok := msg.(legacyLoadedMsg); ok {
+		if legacy.entry != m.card.entry {
+			return m, nil
+		}
+		return m.openMigration(legacy), nil
+	}
 	if key, ok := msg.(tea.KeyMsg); ok && (commandKey(key) == "left" || commandKey(key) == "h") && !m.cardEditingText() {
 		m.mode = modeList
 		return m, nil
@@ -22,7 +40,9 @@ func (m Model) updateCard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.card.loading = true
 		m.pendingBitwarden = m.card.editor.syncBitwarden
+		m.pendingUnlink = m.card.set.BitwardenSync && !m.card.editor.syncBitwarden
 		m.card.mode = cardView
+		m.card.editor = createModel{}
 		return m, verifyMutationCmd(m.ctx, m.lister, m.reader, m.card.entry, nil)
 	}
 	if mutation, ok := msg.(mutationMsg); ok && !mutation.entryDelete {
@@ -45,6 +65,10 @@ func (m Model) updateCard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = verified.entries
 			m.filtered = filterEntries(m.entries, m.filter.Value())
 			m.notice = verified.notice
+			if m.pendingUnlink {
+				m.pendingUnlink = false
+				return m, findBitwardenCmd(m.ctx, m.bitwarden, m.card.entry)
+			}
 			if m.pendingBitwarden {
 				m.pendingBitwarden = false
 				m.notice = errors.New("gopass сохранён; синхронизация Bitwarden…")
@@ -65,13 +89,23 @@ func (m Model) updateCard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if moved, ok := msg.(movedMsg); ok {
+		m.card.loading = false
+		if moved.err != nil {
+			m.card.err = fmt.Errorf("переименование: %w", moved.err)
+			return m, nil
+		}
+		synced := m.card.set.BitwardenSync
+		m.card = newCard(m.ctx, m.reader, m.writer, moved.to)
+		m.notice = fmt.Errorf("запись переименована: %s", moved.to)
+		cmds := []tea.Cmd{loadEntriesCmd(m.ctx, m.lister), loadFieldsCmd(m.ctx, m.reader, moved.to)}
+		if synced {
+			cmds = append(cmds, relinkBitwardenCmd(m.ctx, m.bitwarden, moved.from, moved.to))
+		}
+		return m, tea.Batch(cmds...)
+	}
 	card, cmd, event := m.card.update(msg)
 	m.card = card
-	if _, loaded := msg.(fieldsLoadedMsg); loaded && card.legacy {
-		m.create = newCreate(m.ctx, m.writer, card.entry)
-		m.mode = modeCreate
-		return m, nil
-	}
 	switch event {
 	case cardLeave:
 		m.mode = modeList
@@ -79,19 +113,30 @@ func (m Model) updateCard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cardDeleted:
 		m.notice = card.err
 		m.mode = modeList
+		deleted, synced := m.card.entry, m.card.set.BitwardenSync
 		m.card = cardModel{}
 		m.loading = true
+		if synced {
+			return m, tea.Batch(loadEntriesCmd(m.ctx, m.lister), findBitwardenCmd(m.ctx, m.bitwarden, deleted))
+		}
 		return m, loadEntriesCmd(m.ctx, m.lister)
-	case cardMigrate:
-		m.create = newCreate(m.ctx, m.writer, m.card.entry)
+	case cardClone:
+		m.create = newCreate(m.ctx, m.writer, "")
+		m.create.setFields(cloneTemplate(m.card.set))
+		m.create.path.SetValue(m.card.entry + "-copy")
+		m.create.beginEdit()
 		m.mode = modeCreate
+		return m, m.create.input.Focus()
+	case cardMigrate:
+		m.card.loading = true
+		return m, loadLegacyCmd(m.ctx, m.reader, m.card.entry)
 	}
 	return m, cmd
 }
 
 func (m Model) cardEditingText() bool {
-	if m.card.mode == cardEdit {
+	if m.card.mode == cardEdit || m.card.mode == cardRename {
 		return true
 	}
-	return m.card.mode == cardEditAll && (m.card.editor.editing || m.card.editor.generator.active)
+	return m.card.mode == cardEditAll && (m.card.editor.editing || m.card.editor.generator.active || m.card.editor.adder.active)
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,6 +26,10 @@ type createModel struct {
 	revision      string
 	generator     passwordGenerator
 	syncBitwarden bool
+	adder         fieldAdder
+	initialPath   string
+	initial       []gopass.FieldValue
+	initialSync   bool
 }
 
 type createdMsg struct {
@@ -38,7 +43,8 @@ func newCreate(ctx context.Context, writer gopass.Writer, lockedPath string) cre
 	path.Placeholder = "категория/аккаунт"
 	path.CharLimit = 512
 	path.SetValue(lockedPath)
-	c := createModel{ctx: ctx, writer: writer, path: path, locked: lockedPath, fields: allStandardFields()}
+	c := createModel{ctx: ctx, writer: writer, path: path, locked: lockedPath}
+	c.setFields(nil)
 	if lockedPath == "" {
 		c.beginEdit()
 	} else {
@@ -47,9 +53,50 @@ func newCreate(ctx context.Context, writer gopass.Writer, lockedPath string) cre
 	return c
 }
 
+// setFields задаёт строки формы: только переданные поля или, если их нет,
+// короткий стартовый набор. Остальные kind добавляются клавишей a.
+func (c *createModel) setFields(fields []gopass.FieldValue) {
+	if len(fields) == 0 {
+		fields = defaultCreateFields()
+	}
+	c.fields = append([]gopass.FieldValue(nil), fields...)
+	c.markClean()
+}
+
+// markClean запоминает текущее состояние формы как сохранённое.
+func (c *createModel) markClean() {
+	c.initialPath = c.path.Value()
+	c.initial = append([]gopass.FieldValue(nil), c.fields...)
+	c.initialSync = c.syncBitwarden
+}
+
+// dirty сообщает о несохранённых изменениях, включая незавершённый ввод.
+func (c createModel) dirty() bool {
+	if c.editing {
+		current := c.path.Value()
+		if c.cursor > 0 {
+			current = c.fields[c.cursor-1].Value
+		}
+		if c.input.Value() != current {
+			return true
+		}
+	}
+	if c.path.Value() != c.initialPath || c.syncBitwarden != c.initialSync {
+		return true
+	}
+	return !slices.Equal(nonEmptyFields(c.fields), nonEmptyFields(c.initial))
+}
+
+func (c createModel) acceptingText() bool {
+	return c.editing || c.adder.naming
+}
+
 func (c createModel) update(msg tea.KeyMsg) (createModel, tea.Cmd, bool) {
 	if c.loading {
 		return c, nil, false
+	}
+	if c.adder.active {
+		return c.updateAdder(msg)
 	}
 	if c.generator.active {
 		generator, value, done := c.generator.update(msg)
@@ -93,6 +140,8 @@ func (c createModel) update(msg tea.KeyMsg) (createModel, tea.Cmd, bool) {
 		}
 	case "b":
 		c.syncBitwarden = !c.syncBitwarden
+	case "a":
+		c.adder = newFieldAdder(c.fields)
 	}
 	if msg.Type == tea.KeyCtrlS {
 		return c.save()

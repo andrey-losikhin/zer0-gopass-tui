@@ -1,6 +1,7 @@
 package gopass
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -8,23 +9,23 @@ import (
 	"fmt"
 )
 
-func (w ExecWriter) loadCurrent(ctx context.Context, entryPath, wireRevision string) (Manifest, string, []FieldValue, error) {
-	m, path, _, err := w.loadManifest(ctx, entryPath, wireRevision)
+func (w ExecWriter) loadCurrent(ctx context.Context, entryPath, wireRevision string) (Manifest, string, []byte, []FieldValue, error) {
+	m, path, raw, err := w.loadManifest(ctx, entryPath, wireRevision)
 	if err != nil {
-		return Manifest{}, "", nil, err
+		return Manifest{}, "", nil, nil, err
 	}
 	values := make([]FieldValue, len(m.Fields))
 	for i, f := range m.Fields {
 		value, err := w.store().show(ctx, fieldValuePath(m.BundleID, m.Revision, f.ID))
 		if err != nil {
-			return Manifest{}, "", nil, fmt.Errorf("gopass: read field value: %w", err)
+			return Manifest{}, "", nil, nil, fmt.Errorf("gopass: read field value: %w", err)
 		}
 		if err := ValidFieldValue(value, f.Multiline); err != nil {
-			return Manifest{}, "", nil, err
+			return Manifest{}, "", nil, nil, err
 		}
 		values[i] = FieldValue{Kind: f.Kind, Name: f.Name, Visibility: f.Visibility, Multiline: f.Multiline, Value: string(value)}
 	}
-	return m, path, values, nil
+	return m, path, raw, values, nil
 }
 
 func (w ExecWriter) loadManifest(ctx context.Context, entryPath, wireRevision string) (Manifest, string, []byte, error) {
@@ -46,7 +47,10 @@ func (w ExecWriter) loadManifest(ctx context.Context, entryPath, wireRevision st
 	return m, path, raw, nil
 }
 
-func (w ExecWriter) commit(ctx context.Context, manifestPath, expectedRevision string, base Manifest, values []FieldValue, oldPaths []string) (FieldSet, error) {
+// commit записывает новую revision и переключает manifest. previousRaw — точные
+// байты текущего manifest (nil при создании): они нужны для отката, если
+// записанный manifest не подтвердился.
+func (w ExecWriter) commit(ctx context.Context, manifestPath, expectedRevision string, base Manifest, previousRaw []byte, values []FieldValue) (FieldSet, error) {
 	revision, err := GenerateID()
 	if err != nil {
 		return FieldSet{}, err
@@ -70,10 +74,14 @@ func (w ExecWriter) commit(ctx context.Context, manifestPath, expectedRevision s
 		return FieldSet{}, err
 	}
 
-	written := make([]string, 0, len(values))
+	newDir := revisionDir(next.BundleID, next.Revision)
+	wroteAny := false
 	rollbackError := func(cause error) error {
-		if failed := w.cleanup(ctx, written); failed > 0 {
-			return fmt.Errorf("%w; cleanup of %d new entries failed", cause, failed)
+		if !wroteAny {
+			return cause
+		}
+		if err := w.store().removeTree(ctx, newDir); err != nil {
+			return fmt.Errorf("%w; cleanup of new revision failed", cause)
 		}
 		return cause
 	}
@@ -82,12 +90,14 @@ func (w ExecWriter) commit(ctx context.Context, manifestPath, expectedRevision s
 		if err := w.store().write(ctx, path, []byte(value.Value)); err != nil {
 			return FieldSet{}, rollbackError(err)
 		}
-		written = append(written, path)
+		wroteAny = true
 		got, err := w.store().show(ctx, path)
 		if err != nil || string(got) != value.Value {
 			return FieldSet{}, rollbackError(fmt.Errorf("gopass: value verification failed for field %s", next.Fields[i].ID))
 		}
 	}
+	// Повторная проверка непосредственно перед заменой manifest сужает окно
+	// гонки до одного вызова gopass; атомарного compare-and-swap у gopass нет.
 	if expectedRevision != "" {
 		fresh, err := w.store().show(ctx, manifestPath)
 		if err != nil || wireRevisionOf(fresh) != expectedRevision {
@@ -106,14 +116,53 @@ func (w ExecWriter) commit(ctx context.Context, manifestPath, expectedRevision s
 		return FieldSet{}, rollbackError(err)
 	}
 	confirmed, err := w.store().show(ctx, manifestPath)
-	if err != nil || string(confirmed) != string(raw) {
-		return FieldSet{}, fmt.Errorf("gopass: manifest verification failed")
+	if err != nil || !bytes.Equal(confirmed, raw) {
+		return FieldSet{}, w.recoverManifest(ctx, manifestPath, previousRaw, confirmed, err == nil, newDir)
 	}
 	set := fieldSetFrom(next, values, wireRevisionOf(raw))
-	if failed := w.cleanup(ctx, oldPaths); failed > 0 {
-		return set, &CleanupError{Failed: failed}
+	if previousRaw != nil && base.Revision != "" {
+		if err := w.store().removeTree(ctx, revisionDir(base.BundleID, base.Revision)); err != nil {
+			return set, &CleanupError{Failed: 1}
+		}
 	}
 	return set, nil
+}
+
+// recoverManifest выполняет best-effort откат после неподтверждённой записи
+// manifest. Старая revision ещё не удалена, поэтому возврат previousRaw
+// восстанавливает рабочее состояние. Валидный чужой manifest означает
+// конкурентную запись: его не трогаем, новая revision остаётся для gc.
+func (w ExecWriter) recoverManifest(ctx context.Context, manifestPath string, previousRaw, confirmed []byte, readOK bool, newDir string) error {
+	if readOK {
+		if previousRaw != nil && bytes.Equal(confirmed, previousRaw) {
+			if err := w.store().removeTree(ctx, newDir); err != nil {
+				return fmt.Errorf("gopass: manifest write was not applied; cleanup of new revision failed")
+			}
+			return fmt.Errorf("gopass: manifest write was not applied")
+		}
+		if _, err := ParseManifest(confirmed); err == nil {
+			return fmt.Errorf("%w: manifest changed concurrently after write", ErrStaleRevision)
+		}
+	}
+	var restoreErr error
+	if previousRaw != nil {
+		restoreErr = w.store().write(ctx, manifestPath, previousRaw)
+		if restoreErr == nil {
+			restored, err := w.store().show(ctx, manifestPath)
+			if err != nil || !bytes.Equal(restored, previousRaw) {
+				restoreErr = fmt.Errorf("restored manifest mismatch")
+			}
+		}
+	} else {
+		restoreErr = w.store().remove(ctx, manifestPath)
+	}
+	if restoreErr != nil {
+		return fmt.Errorf("gopass: manifest verification failed; rollback failed, both revisions kept")
+	}
+	if err := w.store().removeTree(ctx, newDir); err != nil {
+		return fmt.Errorf("gopass: manifest verification failed; previous manifest restored, new revision not cleaned")
+	}
+	return fmt.Errorf("gopass: manifest verification failed; previous manifest restored")
 }
 
 func (w ExecWriter) cleanup(ctx context.Context, paths []string) int {
@@ -132,6 +181,14 @@ func oldValuePaths(m Manifest) []string {
 		paths[i] = fieldValuePath(m.BundleID, m.Revision, field.ID)
 	}
 	return paths
+}
+
+func revisionDir(bundleID, revision string) string {
+	return fmt.Sprintf(".zer0-waypass/v1/%s/%s", bundleID, revision)
+}
+
+func bundleDir(bundleID string) string {
+	return ".zer0-waypass/v1/" + bundleID
 }
 
 func wireRevisionOf(raw []byte) string {

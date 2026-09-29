@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,53 @@ type fakeWriterBackend struct {
 	existsCalls    int
 	onExists       func(*fakeWriterBackend)
 	existsErr      error
+	treeRemoves    []string
+	failTree       map[string]error
+	moves          []string
+	failMove       map[string]error
+	rootDir        string
+}
+
+func (f *fakeWriterBackend) removeTree(_ context.Context, dir string) error {
+	f.treeRemoves = append(f.treeRemoves, dir)
+	if err := f.failTree[dir]; err != nil {
+		return err
+	}
+	found := false
+	for path := range f.data {
+		if strings.HasPrefix(path, dir+"/") {
+			delete(f.data, path)
+			found = true
+		}
+	}
+	if !found {
+		return errors.New("not in store")
+	}
+	return nil
+}
+
+func (f *fakeWriterBackend) move(_ context.Context, from, to string) error {
+	f.moves = append(f.moves, from+" -> "+to)
+	if err := f.failMove[from]; err != nil {
+		return err
+	}
+	value, ok := f.data[from]
+	if !ok {
+		return errors.New("missing")
+	}
+	if _, exists := f.data[to]; exists {
+		return errors.New("not overwriting")
+	}
+	f.data[to] = value
+	delete(f.data, from)
+	return nil
+}
+
+func (f *fakeWriterBackend) root(context.Context) (string, error) {
+	if f.rootDir == "" {
+		return "", errors.New("no root")
+	}
+	return f.rootDir, nil
 }
 
 func (f *fakeWriterBackend) exists(_ context.Context, path string) (bool, error) {
@@ -88,6 +136,7 @@ func manifestFixture(t *testing.T) (*fakeWriterBackend, Manifest, string) {
 	}
 	f := &fakeWriterBackend{data: map[string][]byte{}, failWrite: map[string]error{}, failRemove: map[string]error{}, manifestPath: path}
 	f.data[path] = raw
+	f.data["work/account"] = compatibilityBody("secret")
 	f.data[fieldValuePath(m.BundleID, m.Revision, m.Fields[0].ID)] = []byte("alice")
 	f.data[fieldValuePath(m.BundleID, m.Revision, m.Fields[1].ID)] = []byte("secret")
 	return f, m, wireRevisionOf(raw)
@@ -134,12 +183,17 @@ func TestUpdateFieldStaleAfterValueWritesCleansNewEntries(t *testing.T) {
 	if !errors.Is(err, ErrStaleRevision) {
 		t.Fatalf("UpdateField() error = %v, want ErrStaleRevision", err)
 	}
-	if len(f.removes) != len(m.Fields) {
-		t.Fatalf("removed new entries = %d, want %d", len(f.removes), len(m.Fields))
+	if len(f.treeRemoves) != 1 || len(f.removes) != 0 {
+		t.Fatalf("tree removes = %v, removes = %v, want one new-revision removal", f.treeRemoves, f.removes)
 	}
-	for _, path := range f.removes {
-		if _, ok := f.data[path]; ok {
+	for path := range f.data {
+		if strings.HasPrefix(path, f.treeRemoves[0]+"/") {
 			t.Fatalf("orphan value %q was not removed", path)
+		}
+	}
+	for _, path := range oldValuePaths(m) {
+		if _, ok := f.data[path]; !ok {
+			t.Fatalf("old value %q removed after stale failure", path)
 		}
 	}
 }

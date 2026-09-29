@@ -28,8 +28,7 @@ func TestCreateBundleRechecksManifestBeforeReplace(t *testing.T) {
 
 func TestUpdateFieldReportsCleanupWarningAfterCommit(t *testing.T) {
 	f, m, revision := manifestFixture(t)
-	failedPath := fieldValuePath(m.BundleID, m.Revision, m.Fields[0].ID)
-	f.failRemove[failedPath] = errors.New("remove failed")
+	f.failTree = map[string]error{revisionDir(m.BundleID, m.Revision): errors.New("remove failed")}
 	w := ExecWriter{backend: f}
 
 	set, err := w.UpdateField(context.Background(), "work/account", revision, m.Fields[0].ID, FieldValue{Kind: "username", Name: "Username", Visibility: VisibilityPublic, Value: "bob"})
@@ -91,7 +90,7 @@ func TestCreateBundleWritesCompatibilityEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateBundle() error = %v", err)
 	}
-	if string(f.data["new/account"]) != "zer0-waypass field bundle" {
+	if string(f.data["new/account"]) != "secret\nzer0-waypass: field bundle" {
 		t.Fatalf("compatibility entry = %q", f.data["new/account"])
 	}
 	if len(set.Fields) != 1 || set.Fields[0].Value != "" {
@@ -146,9 +145,9 @@ func TestCreateBundleRefusesExistingLegacyEntry(t *testing.T) {
 	}
 }
 
-func TestMigrateBundlePreservesLegacyCompatibilityValue(t *testing.T) {
+func TestMigrateBundleUpdatesOnlyLegacyPasswordLine(t *testing.T) {
 	path, _ := encodedManifestPath("legacy/account")
-	f := &fakeWriterBackend{data: map[string][]byte{"legacy/account": []byte("original-secret")}, failWrite: map[string]error{}, failRemove: map[string]error{}, manifestPath: path}
+	f := &fakeWriterBackend{data: map[string][]byte{"legacy/account": []byte("original-secret\nuser: alice")}, failWrite: map[string]error{}, failRemove: map[string]error{}, manifestPath: path}
 	w := ExecWriter{backend: f}
 	_, err := w.MigrateBundle(context.Background(), "legacy/account", []FieldValue{{
 		Kind: "password", Name: "Password", Visibility: VisibilitySecret, Value: "new-secret",
@@ -156,8 +155,8 @@ func TestMigrateBundlePreservesLegacyCompatibilityValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrateBundle() error = %v", err)
 	}
-	if string(f.data["legacy/account"]) != "original-secret" {
-		t.Fatalf("legacy compatibility value = %q", f.data["legacy/account"])
+	if string(f.data["legacy/account"]) != "new-secret\nuser: alice" {
+		t.Fatal("legacy main entry was not aligned with manifest password")
 	}
 	if _, ok := f.data[path]; !ok {
 		t.Fatal("migrated manifest missing")
@@ -173,5 +172,19 @@ func TestDeleteLegacyRefusesEntryThatBecameBundle(t *testing.T) {
 	}
 	if string(f.data["legacy/account"]) != "keep" {
 		t.Fatal("compatibility entry was removed")
+	}
+}
+
+func TestMigrateWithoutPasswordKeepsLegacyEntry(t *testing.T) {
+	path, _ := encodedManifestPath("legacy/account")
+	f := &fakeWriterBackend{data: map[string][]byte{"legacy/account": []byte("original-secret")}, failWrite: map[string]error{}, failRemove: map[string]error{}, manifestPath: path}
+	w := ExecWriter{backend: f}
+	if _, err := w.MigrateBundle(context.Background(), "legacy/account", []FieldValue{{
+		Kind: "username", Name: "Username", Visibility: VisibilityPublic, Value: "alice",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if string(f.data["legacy/account"]) != "original-secret" {
+		t.Fatal("legacy entry changed although manifest has no password")
 	}
 }

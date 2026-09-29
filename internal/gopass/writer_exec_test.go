@@ -117,3 +117,36 @@ func TestExecBackendShowExistsAndRedactsStderr(t *testing.T) {
 		}
 	}
 }
+
+func TestExecBackendTreeRemoveAndMoveUseFixedArgv(t *testing.T) {
+	logPath, _ := installFakeGopass(t)
+	b := execWriterBackend{}
+	if err := b.removeTree(context.Background(), ".zer0-waypass/v1/-bundle/rev"); err != nil {
+		t.Fatalf("removeTree() error = %v", err)
+	}
+	if err := b.move(context.Background(), "from/a", "to/b"); err != nil {
+		t.Fatalf("move() error = %v", err)
+	}
+	log, _ := os.ReadFile(logPath)
+	for _, want := range []string{"rm --recursive --force -- .zer0-waypass/v1/-bundle/rev", "mv -- from/a to/b"} {
+		if !strings.Contains(string(log), want) {
+			t.Fatalf("argv log %q misses %q", log, want)
+		}
+	}
+	if strings.Contains(string(log), "mv --force") {
+		t.Fatal("move must not overwrite existing targets")
+	}
+}
+
+func TestExpandStoreRoot(t *testing.T) {
+	t.Setenv("HOME", "/home/synthetic")
+	if got, err := expandStoreRoot("~/.local/share/gopass/stores/root"); err != nil || got != "/home/synthetic/.local/share/gopass/stores/root" {
+		t.Fatalf("expandStoreRoot() = %q, %v", got, err)
+	}
+	if _, err := expandStoreRoot("relative/path"); err == nil {
+		t.Fatal("relative root accepted")
+	}
+	if _, err := expandStoreRoot("~other/store"); err == nil {
+		t.Fatal("~user form accepted")
+	}
+}

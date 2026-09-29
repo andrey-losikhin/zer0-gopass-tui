@@ -18,9 +18,17 @@ type fakeLister struct {
 func (f fakeLister) List(context.Context) ([]gopass.Entry, error) { return f.entries, f.err }
 
 type fakeReader struct {
-	sets     map[string]gopass.FieldSet
-	err      error
-	revealed string
+	sets        map[string]gopass.FieldSet
+	err         error
+	revealed    string
+	resolves    int
+	legacy      []gopass.FieldValue
+	legacyReads int
+}
+
+func (f *fakeReader) ReadLegacy(context.Context, string) ([]gopass.FieldValue, error) {
+	f.legacyReads++
+	return f.legacy, nil
 }
 
 func (f *fakeReader) ReadManifest(_ context.Context, entry string) (gopass.FieldSet, error) {
@@ -31,6 +39,7 @@ func (f *fakeReader) ReadManifest(_ context.Context, entry string) (gopass.Field
 }
 
 func (f *fakeReader) ResolveField(context.Context, string, string, string) (string, error) {
+	f.resolves++
 	return f.revealed, f.err
 }
 
@@ -43,6 +52,8 @@ type fakeWriter struct {
 	added         bool
 	deletedField  string
 	deletedEntry  string
+	movedFrom     string
+	movedTo       string
 	err           error
 }
 
@@ -78,6 +89,10 @@ func (f *fakeWriter) DeleteLegacy(_ context.Context, entry string) error {
 	f.deletedEntry = entry
 	return f.err
 }
+func (f *fakeWriter) MoveEntry(_ context.Context, from, to, _ string) error {
+	f.movedFrom, f.movedTo = from, to
+	return f.err
+}
 
 func testSet() gopass.FieldSet {
 	return gopass.FieldSet{Revision: "wire", Fields: []gopass.FieldItem{
@@ -102,7 +117,7 @@ func keyRunes(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
-func TestFirstEntryAutomaticallyOpensFullEditor(t *testing.T) {
+func TestPreviewLoadsOnlyManifestWithoutDecryptingSecrets(t *testing.T) {
 	r := &fakeReader{sets: map[string]gopass.FieldSet{"work/account": testSet()}, revealed: "secret"}
 	w := &fakeWriter{set: testSet()}
 	m := NewModel(context.Background(), fakeLister{}, r, w)
@@ -114,13 +129,11 @@ func TestFirstEntryAutomaticallyOpensFullEditor(t *testing.T) {
 	}
 	updated, cmd = m.Update(cmd())
 	m = updated.(Model)
-	if cmd == nil {
-		t.Fatal("field values were not requested")
+	if cmd != nil || r.resolves != 0 || m.card.mode != cardView {
+		t.Fatalf("preview decrypted secrets: resolves=%d mode=%v cmd=%v", r.resolves, m.card.mode, cmd)
 	}
-	updated, _ = m.Update(cmd())
-	m = updated.(Model)
-	if m.card.mode != cardEditAll || m.card.editor.locked != "work/account" {
-		t.Fatalf("card=%#v", m.card)
+	if view := m.View(); !strings.Contains(view, "alice") || strings.Contains(view, "secret") {
+		t.Fatalf("preview view = %q", view)
 	}
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = updated.(Model)
@@ -178,8 +191,8 @@ func TestHorizontalKeysSwitchPanelFocus(t *testing.T) {
 	}
 }
 
-func TestEnterOpensFullCardEditor(t *testing.T) {
-	m, _, _ := loadedModel(t, []gopass.Entry{{Path: "work/account"}})
+func TestEditIsExplicitAndLeavingDropsPlaintext(t *testing.T) {
+	m, r, _ := loadedModel(t, []gopass.Entry{{Path: "work/account"}})
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 	if m.mode != modeCard || cmd == nil || m.quitting {
@@ -187,17 +200,48 @@ func TestEnterOpensFullCardEditor(t *testing.T) {
 	}
 	updated, cmd = m.Update(cmd())
 	m = updated.(Model)
-	if cmd == nil || !m.card.loading {
-		t.Fatal("full editor values were not requested")
+	if cmd != nil || r.resolves != 0 || m.card.mode != cardView {
+		t.Fatalf("opening card decrypted secrets: resolves=%d", r.resolves)
 	}
+	updated, cmd = m.Update(keyRunes("e"))
+	m = updated.(Model)
 	updated, _ = m.Update(cmd())
 	m = updated.(Model)
-	if m.card.loading || m.card.mode != cardEditAll || len(m.card.editor.fields) != 20 {
-		t.Fatalf("card = %#v", m.card)
+	if r.resolves != 1 || m.card.mode != cardEditAll || len(m.card.editor.fields) != 2 {
+		t.Fatalf("editor not opened: resolves=%d mode=%v", r.resolves, m.card.mode)
 	}
 	view := m.View()
 	if !strings.Contains(view, "alice") || strings.Contains(view, "secret") || !strings.Contains(view, "РЕДАКТИРОВАНИЕ КАРТОЧКИ") {
 		t.Fatalf("full editor leaked/missed value: %q", view)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.card.mode != cardView || m.card.editor.fields != nil {
+		t.Fatal("editor plaintext kept after leaving editor")
+	}
+}
+
+func TestQuitAsksConfirmationWithUnsavedChanges(t *testing.T) {
+	m, _, _ := loadedModel(t, nil)
+	m.mode = modeCreate
+	m.create = newCreate(m.ctx, m.writer, "entry")
+	m.create.fields[1].Value = "changed"
+	updated, cmd := m.Update(keyRunes("q"))
+	m = updated.(Model)
+	if m.quitting || cmd != nil || !m.confirmQuit || !strings.Contains(m.View(), "несохранённые") {
+		t.Fatalf("quit without confirmation: quitting=%v confirm=%v", m.quitting, m.confirmQuit)
+	}
+	updated, _ = m.Update(keyRunes("n"))
+	m = updated.(Model)
+	if m.quitting || m.confirmQuit {
+		t.Fatal("declined quit did not return to form")
+	}
+	updated, _ = m.Update(keyRunes("q"))
+	m = updated.(Model)
+	updated, cmd = m.Update(keyRunes("y"))
+	m = updated.(Model)
+	if !m.quitting || cmd == nil {
+		t.Fatal("confirmed quit did not exit")
 	}
 }
 
@@ -278,15 +322,57 @@ func TestListDeleteRequiresConfirmation(t *testing.T) {
 	}
 }
 
-func TestLegacyCardImmediatelyOpensMigrationWizard(t *testing.T) {
+func TestRussianLayoutMapsEveryLetterKey(t *testing.T) {
+	for ru, en := range map[string]string{"ь": "m", "Ь": "M", "й": "q", "ы": "s", "а": "f", "К": "R", "В": "D", "з": "p", "м": "v", ".": "/"} {
+		if got := commandKey(keyRunes(ru)); got != en {
+			t.Errorf("commandKey(%q) = %q, want %q", ru, got, en)
+		}
+	}
+	if got := commandKey(keyRunes(",")); got != "," {
+		t.Errorf("latin comma remapped to %q", got)
+	}
+}
+
+func TestLegacyCardEscLeavesWhileDecryptPending(t *testing.T) {
 	m, r, _ := loadedModel(t, []gopass.Entry{{Path: "work/account"}})
 	r.err = gopass.ErrManifestNotFound
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 	updated, _ = m.Update(cmd())
 	m = updated.(Model)
+	updated, _ = m.Update(keyRunes("m"))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.mode != modeList {
+		t.Fatalf("Esc during pending decrypt left mode=%v", m.mode)
+	}
+}
+
+func TestLegacyCardOpensPrefilledMigrationWizard(t *testing.T) {
+	m, r, _ := loadedModel(t, []gopass.Entry{{Path: "work/account"}})
+	r.err = gopass.ErrManifestNotFound
+	r.legacy = gopass.ParseLegacy([]byte("legacy-pass\nlogin: carol"))
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, cmd = m.Update(cmd())
+	m = updated.(Model)
+	if cmd != nil || r.legacyReads != 0 {
+		t.Fatal("legacy entry was decrypted before the user pressed m")
+	}
+	// Russian layout: ь is the m key.
+	updated, cmd = m.Update(keyRunes("ь"))
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("legacy content was not requested")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
 	if m.mode != modeCreate || m.create.locked != "work/account" {
 		t.Fatalf("migration mode=%v path=%q", m.mode, m.create.locked)
+	}
+	if len(m.create.fields) != 2 || m.create.fields[0].Value != "legacy-pass" || m.create.fields[1].Value != "carol" {
+		t.Fatalf("migration form not prefilled: %d fields", len(m.create.fields))
 	}
 	if strings.Contains(m.View(), "manifest not found") {
 		t.Fatalf("legacy backend error is still shown: %q", m.View())

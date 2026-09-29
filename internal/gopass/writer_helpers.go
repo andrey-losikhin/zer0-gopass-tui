@@ -15,12 +15,13 @@ func (w ExecWriter) rollbackCreated(ctx context.Context, manifestPath string) in
 	if err != nil {
 		return 1
 	}
-	failed := 0
 	if err := w.store().remove(ctx, manifestPath); err != nil {
 		return 1
 	}
-	failed += w.cleanup(ctx, oldValuePaths(m))
-	return failed
+	if err := w.store().removeTree(ctx, bundleDir(m.BundleID)); err != nil {
+		return 1
+	}
+	return 0
 }
 
 func encodedManifestPath(entryPath string) (string, error) {

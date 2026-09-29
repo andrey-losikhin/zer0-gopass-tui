@@ -8,6 +8,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.create = create
 		if cancel {
 			m.mode = modeList
+			m.create = createModel{}
 		}
 		return m, cmd
 	}
@@ -21,6 +22,9 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.legacy {
 				return m, deleteLegacyCmd(m.ctx, m.writer, entry.Path)
 			}
+			if m.delete.BitwardenSync {
+				m.deleteSyncPath = entry.Path
+			}
 			return m, deleteEntryCmd(m.ctx, m.writer, entry.Path, m.delete.Revision)
 		}
 		m.mode = modeList
@@ -29,6 +33,18 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeFilter {
 		return m.updateFilterMode(msg)
 	}
+	if m.duplicates.confirm {
+		m.duplicates = duplicateState{}
+		if commandKey(msg) == "y" {
+			m.duplicates.running = true
+			return m, findDuplicatesCmd(m.ctx, m.reader, m.entries)
+		}
+		return m, nil
+	}
+	if m.duplicates.running {
+		return m, nil
+	}
+	m.duplicates.result = nil
 	return m.updateListMode(msg)
 }
 
@@ -46,6 +62,10 @@ func (m Model) updateListMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		m.mode = modeFilter
 		return m, m.filter.Focus()
+	case "D":
+		if len(m.entries) > 0 {
+			m.duplicates = duplicateState{confirm: true}
+		}
 	case "n":
 		m.create = newCreate(m.ctx, m.writer, "")
 		m.mode = modeCreate
@@ -54,7 +74,7 @@ func (m Model) updateListMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		entry := m.filtered[m.cursor]
-		if m.card.entry == entry.Path && m.card.mode == cardEditAll && !m.card.loading {
+		if m.card.entry == entry.Path && !m.card.loading && !m.card.legacy && !m.card.fatal {
 			m.mode = modeCard
 			return m, nil
 		}

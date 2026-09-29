@@ -19,10 +19,32 @@ type passwordGenerator struct {
 	symbols   bool
 	ambiguous bool
 	err       error
+	preset    generatorPreset
+	words     int
+	pinLength int
 }
 
 func newPasswordGenerator() passwordGenerator {
-	return passwordGenerator{active: true, length: 24, lower: true, upper: true, digits: true, symbols: true}
+	return passwordGenerator{active: true, length: 24, lower: true, upper: true, digits: true, symbols: true, words: 6, pinLength: 6}
+}
+
+// rows — число строк настроек текущего пресета (строка 0 — длина).
+func (g passwordGenerator) rows() int {
+	if g.preset == presetCharacters {
+		return 6
+	}
+	return 1
+}
+
+func (g *passwordGenerator) adjustLength(delta int) {
+	switch g.preset {
+	case presetPassphrase:
+		g.words = min(20, max(3, g.words+delta))
+	case presetPIN:
+		g.pinLength = min(32, max(4, g.pinLength+delta))
+	default:
+		g.length = min(256, max(8, g.length+delta))
+	}
 }
 
 func (g passwordGenerator) update(msg tea.KeyMsg) (passwordGenerator, string, bool) {
@@ -31,21 +53,24 @@ func (g passwordGenerator) update(msg tea.KeyMsg) (passwordGenerator, string, bo
 	}
 	switch commandKey(msg) {
 	case "up", "k":
-		g.cursor = clampCursor(g.cursor-1, 6)
+		g.cursor = clampCursor(g.cursor-1, g.rows())
 	case "down", "j":
-		g.cursor = clampCursor(g.cursor+1, 6)
+		g.cursor = clampCursor(g.cursor+1, g.rows())
 	case "left", "h":
-		if g.cursor == 0 && g.length > 8 {
-			g.length--
+		if g.cursor == 0 {
+			g.adjustLength(-1)
 		}
 	case "right", "l":
-		if g.cursor == 0 && g.length < 256 {
-			g.length++
+		if g.cursor == 0 {
+			g.adjustLength(1)
 		}
+	case "p":
+		g.preset = (g.preset + 1) % 3
+		g.cursor, g.err = 0, nil
 	case " ":
 		g.toggle()
 	case "enter", "g":
-		value, err := generatePassword(g)
+		value, err := g.generate()
 		g.err = err
 		if err == nil {
 			return g, value, true
@@ -69,10 +94,30 @@ func (g *passwordGenerator) toggle() {
 	}
 }
 
+func (g passwordGenerator) generate() (string, error) {
+	switch g.preset {
+	case presetPassphrase:
+		return generatePassphrase(g.words)
+	case presetPIN:
+		return generatePIN(g.pinLength)
+	default:
+		return generatePassword(g)
+	}
+}
+
 func (g passwordGenerator) view() string {
-	rows := []string{fmt.Sprintf("Длина: %d", g.length), flag("Строчные", g.lower), flag("Прописные", g.upper), flag("Цифры", g.digits), flag("Спецсимволы", g.symbols), flag("Неоднозначные (опасные)", g.ambiguous)}
+	var rows []string
+	switch g.preset {
+	case presetPassphrase:
+		rows = []string{fmt.Sprintf("Слов: %d", g.words)}
+	case presetPIN:
+		rows = []string{fmt.Sprintf("Цифр: %d", g.pinLength)}
+	default:
+		rows = []string{fmt.Sprintf("Длина: %d", g.length), flag("Строчные", g.lower), flag("Прописные", g.upper), flag("Цифры", g.digits), flag("Спецсимволы", g.symbols), flag("Неоднозначные (опасные)", g.ambiguous)}
+	}
 	var b strings.Builder
 	b.WriteString("ГЕНЕРАТОР ПАРОЛЯ\n\n")
+	fmt.Fprintf(&b, "Пресет: %s (p)\nОценка энтропии: ≈ %.0f бит\n\n", g.preset.name(), entropyBits(g))
 	if g.err != nil {
 		fmt.Fprintf(&b, "Ошибка: %v\n\n", g.err)
 	}
@@ -83,7 +128,7 @@ func (g passwordGenerator) view() string {
 		}
 		b.WriteString(prefix + row + "\n")
 	}
-	b.WriteString("\n←/→ длина  Space переключить  Enter сгенерировать  Esc отмена")
+	b.WriteString("\n←/→ длина  Space переключить  p пресет  Enter сгенерировать  Esc отмена")
 	return b.String()
 }
 
@@ -148,9 +193,18 @@ func passwordClasses(g passwordGenerator) []string {
 }
 
 func randomChar(alphabet string) (byte, error) {
-	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+	n, err := randomIndex(len(alphabet))
+	if err != nil {
+		return 0, err
+	}
+	return alphabet[n], nil
+}
+
+// randomIndex возвращает равномерное число [0, n) из crypto/rand.
+func randomIndex(n int) (int, error) {
+	value, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
 	if err != nil {
 		return 0, fmt.Errorf("генератор случайных чисел: %w", err)
 	}
-	return alphabet[n.Int64()], nil
+	return int(value.Int64()), nil
 }

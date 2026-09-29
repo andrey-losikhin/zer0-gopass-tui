@@ -60,20 +60,38 @@ Run `zer0-gopass-tui`, then use:
 | `/` | Search |
 | `n` | Create an entry |
 | `d` | Delete after confirmation |
-| `g` | Open the password generator on a secret field |
+| `D` | Check for reused passwords (decrypts all passwords after confirmation) |
+| `r` / `e` | Reveal a secret field / open the editor (card) |
+| `R` / `c` | Rename the entry / clone it as a template (card) |
+| `a` | Add a field (card or form) |
+| `g`, then `p` | Open the password generator on a secret field; `p` cycles presets |
 | `Ctrl+R` | Reveal or mask a secret during manual input |
 | `Ctrl+J` | Add a line break in a multiline field |
 | `Ctrl+S` | Save the form |
-| `q` | Quit outside text input |
+| `q` | Quit outside text input (asks first when a form has unsaved changes) |
 
 Commands work with English and Russian keyboard layouts.
+
+The list preview shows only public values; secrets are decrypted on `r` or `e`.
+A revealed `totp_secret` (base32 or `otpauth://totp` URI) is shown as the
+current code with the seconds remaining. The generator offers character,
+passphrase (EFF short wordlist, CC BY 3.0 US) and PIN presets with an entropy
+estimate.
+
+### Cleaning up the reserved namespace
+
+`zer0-gopass-tui gc` lists value files and revision/bundle directories that no
+manifest references, plus empty directories, and removes them only after `y`.
+Any unreadable or invalid manifest aborts the run.
 
 ### Optional Bitwarden synchronization
 
 In a create or full-edit form, press `b` to opt the entry into synchronization.
 After a successful `gopass` write, the application creates or updates a
-Bitwarden Login item. Disabling synchronization does not delete an existing
-Bitwarden item. A Bitwarden failure does not roll back the `gopass` write.
+Bitwarden Login item. When a synchronized entry is deleted or synchronization
+is disabled, the application shows the linked Bitwarden item and moves it to
+the Bitwarden trash only after `y`. A Bitwarden failure does not roll back the
+`gopass` write.
 
 The helper starts `bw serve` on loopback, runs the TUI, and stops the server it
 created:

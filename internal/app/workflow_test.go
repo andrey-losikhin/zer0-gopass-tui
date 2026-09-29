@@ -87,6 +87,12 @@ func (v *fakeVault) DeleteField(context.Context, string, string, string) (gopass
 }
 func (v *fakeVault) DeleteEntry(context.Context, string, string) error { return nil }
 func (v *fakeVault) DeleteLegacy(context.Context, string) error        { return nil }
+func (v *fakeVault) MoveEntry(_ context.Context, from, to, _ string) error {
+	v.sets[to], v.values[to] = v.sets[from], v.values[from]
+	delete(v.sets, from)
+	delete(v.values, from)
+	return nil
+}
 
 func TestCreateSaveReloadAndOpenWorkflow(t *testing.T) {
 	vault := newFakeVault()
@@ -98,7 +104,7 @@ func TestCreateSaveReloadAndOpenWorkflow(t *testing.T) {
 	m.create.path.SetValue("github/account")
 	m.create.fields[0].Value = "secret"
 	m.create.fields[1].Value = "alice"
-	m.create.fields[4].Value = "first\nsecond"
+	m.create.fields[3].Value = "first\nsecond"
 	m.create.editing = false
 
 	updated, save := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})

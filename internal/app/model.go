@@ -53,6 +53,11 @@ type Model struct {
 	width            int
 	height           int
 	pendingBitwarden bool
+	confirmQuit      bool
+	bwDelete         *bitwardenDeletePrompt
+	deleteSyncPath   string
+	pendingUnlink    bool
+	duplicates       duplicateState
 }
 
 // NewModel создаёт модель с зависимостями gopass.
@@ -78,8 +83,27 @@ func loadEntriesCmd(ctx context.Context, lister gopass.Lister) tea.Cmd {
 
 // Update обрабатывает сообщения Bubble Tea.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if updated, cmd, handled := m.updateBitwardenDelete(msg); handled {
+		return updated, cmd
+	}
 	if key, ok := msg.(tea.KeyMsg); ok {
-		if key.Type == tea.KeyCtrlC || (commandKey(key) == "q" && !m.acceptingText()) {
+		if m.confirmQuit {
+			m.confirmQuit = false
+			if commandKey(key) == "y" {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		if key.Type == tea.KeyCtrlC {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		if commandKey(key) == "q" && !m.acceptingText() {
+			if m.unsavedChanges() {
+				m.confirmQuit = true
+				return m, nil
+			}
 			m.quitting = true
 			return m, tea.Quit
 		}
@@ -93,7 +117,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.mode == modeList {
 		switch msg.(type) {
-		case fieldsLoadedMsg, editBundleLoadedMsg:
+		case fieldsLoadedMsg, editBundleLoadedMsg, ageLoadedMsg:
 			card, cmd, _ := m.card.update(msg)
 			m.card = card
 			return m, cmd
@@ -114,6 +138,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.err = msg.err
 		m.loading = false
+	case duplicatesMsg:
+		m.duplicates = duplicateState{result: &msg}
 	case createdMsg:
 		if msg.err != nil {
 			m.create.err = msg.err
@@ -137,7 +163,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entries = msg.entries
 		m.filtered = filterEntries(m.entries, m.filter.Value())
 		m.notice = fmt.Errorf("запись сохранена и проверена")
-		if m.create.syncBitwarden {
+		syncBitwarden := m.create.syncBitwarden
+		m.create = createModel{}
+		if syncBitwarden {
 			m.notice = fmt.Errorf("gopass сохранён; синхронизация Bitwarden…")
 			m.card.loading = true
 			return m, syncBitwardenCmd(m.ctx, m.bitwarden, m.reader, msg.path, msg.set)
@@ -166,6 +194,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.notice = msg.err
 			m.mode = modeList
+			if path := m.deleteSyncPath; path != "" {
+				m.deleteSyncPath = ""
+				return m, tea.Batch(loadEntriesCmd(m.ctx, m.lister), findBitwardenCmd(m.ctx, m.bitwarden, path))
+			}
 			return m, loadEntriesCmd(m.ctx, m.lister)
 		}
 	case tea.KeyMsg:
@@ -175,9 +207,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) acceptingText() bool {
-	if m.mode == modeFilter || (m.mode == modeCreate && m.create.editing) {
+	if m.mode == modeFilter || (m.mode == modeCreate && m.create.acceptingText()) {
 		return true
 	}
-	return m.mode == modeCard && m.card.mode == cardEditAll &&
-		m.card.editor.editing
+	return m.mode == modeCard && m.card.acceptingText()
+}
+
+// unsavedChanges сообщает о несохранённой форме создания или редактирования.
+func (m Model) unsavedChanges() bool {
+	if m.mode == modeCreate && m.create.dirty() {
+		return true
+	}
+	if m.card.mode == cardEdit && m.card.form.input.Value() != m.card.form.field.Value {
+		return true
+	}
+	return m.card.mode == cardEditAll && m.card.editor.dirty()
 }

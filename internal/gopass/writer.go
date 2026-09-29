@@ -15,11 +15,22 @@ type FieldValue struct {
 }
 
 // CleanupError означает, что новый manifest уже установлен, но часть старых
-// value entries удалить не удалось. Обновление успешно и откатывать его нельзя.
-type CleanupError struct{ Failed int }
+// value entries удалить не удалось (Failed) или main entry не удалось привести
+// к паролю manifest (Compatibility). Обновление успешно и откатывать его нельзя.
+type CleanupError struct {
+	Failed        int
+	Compatibility bool
+}
 
 func (e *CleanupError) Error() string {
-	return fmt.Sprintf("gopass: bundle updated, but %d old entries were not cleaned up", e.Failed)
+	switch {
+	case e.Failed > 0 && e.Compatibility:
+		return fmt.Sprintf("gopass: bundle updated, but %d old entries were not cleaned up and main entry was not updated", e.Failed)
+	case e.Compatibility:
+		return "gopass: bundle updated, but main entry password line was not updated"
+	default:
+		return fmt.Sprintf("gopass: bundle updated, but %d old entries were not cleaned up (run gc)", e.Failed)
+	}
 }
 
 // Writer создаёт и изменяет field bundles.
@@ -32,6 +43,7 @@ type Writer interface {
 	DeleteField(context.Context, string, string, string) (FieldSet, error)
 	DeleteEntry(context.Context, string, string) error
 	DeleteLegacy(context.Context, string) error
+	MoveEntry(context.Context, string, string, string) error
 }
 
 // ReplaceBundle атомарно заменяет все поля bundle с optimistic-lock.
@@ -41,11 +53,13 @@ func (w ExecWriter) ReplaceBundle(ctx context.Context, entryPath, wireRevision s
 		return FieldSet{}, err
 	}
 	defer unlock()
-	m, path, _, err := w.loadCurrent(ctx, entryPath, wireRevision)
+	// Старые значения не нужны: все поля приходят целиком, поэтому читается
+	// только manifest без расшифровки values.
+	m, path, raw, err := w.loadManifest(ctx, entryPath, wireRevision)
 	if err != nil {
 		return FieldSet{}, err
 	}
-	return w.commit(ctx, path, wireRevision, m, fields, oldValuePaths(m))
+	return w.commitAndSync(ctx, entryPath, path, wireRevision, m, raw, fields)
 }
 
 // DeleteLegacy удаляет обычную запись без field manifest.
@@ -81,8 +95,9 @@ func StandardField(kind FieldKind) (field FieldValue, ok bool) {
 
 // ExecWriter изменяет field bundles через gopass. Каждая мутация переносит все
 // оставшиеся значения под новый revision и выдаёт всем полям новые ID. Manifest
-// заменяется только после записи и точной проверки всех values. Сбой процесса до
-// замены manifest может оставить orphan entries, но старый bundle остаётся рабочим.
+// заменяется только после записи и точной проверки всех values; старая revision
+// удаляется одной командой `gopass rm -r`. Сбой процесса до замены manifest может
+// оставить orphan entries (их удаляет gc), но старый bundle остаётся рабочим.
 type ExecWriter struct {
 	backend     writerBackend
 	lockEnabled bool
@@ -102,12 +117,12 @@ func (w ExecWriter) AddField(ctx context.Context, entryPath, wireRevision string
 		return FieldSet{}, err
 	}
 	defer unlock()
-	m, path, values, err := w.loadCurrent(ctx, entryPath, wireRevision)
+	m, path, raw, values, err := w.loadCurrent(ctx, entryPath, wireRevision)
 	if err != nil {
 		return FieldSet{}, err
 	}
 	values = append(values, field)
-	return w.commit(ctx, path, wireRevision, m, values, oldValuePaths(m))
+	return w.commitAndSync(ctx, entryPath, path, wireRevision, m, raw, values)
 }
 
 // UpdateField заменяет descriptor и значение существующего поля.
@@ -117,7 +132,7 @@ func (w ExecWriter) UpdateField(ctx context.Context, entryPath, wireRevision, fi
 		return FieldSet{}, err
 	}
 	defer unlock()
-	m, path, values, err := w.loadCurrent(ctx, entryPath, wireRevision)
+	m, path, raw, values, err := w.loadCurrent(ctx, entryPath, wireRevision)
 	if err != nil {
 		return FieldSet{}, err
 	}
@@ -126,7 +141,7 @@ func (w ExecWriter) UpdateField(ctx context.Context, entryPath, wireRevision, fi
 		return FieldSet{}, ErrFieldNotFound
 	}
 	values[index] = field
-	return w.commit(ctx, path, wireRevision, m, values, oldValuePaths(m))
+	return w.commitAndSync(ctx, entryPath, path, wireRevision, m, raw, values)
 }
 
 // DeleteField удаляет поле; удаление последнего поля выполняется DeleteEntry.
@@ -136,7 +151,7 @@ func (w ExecWriter) DeleteField(ctx context.Context, entryPath, wireRevision, fi
 		return FieldSet{}, err
 	}
 	defer unlock()
-	m, path, values, err := w.loadCurrent(ctx, entryPath, wireRevision)
+	m, path, raw, values, err := w.loadCurrent(ctx, entryPath, wireRevision)
 	if err != nil {
 		return FieldSet{}, err
 	}
@@ -148,10 +163,13 @@ func (w ExecWriter) DeleteField(ctx context.Context, entryPath, wireRevision, fi
 		return FieldSet{}, fmt.Errorf("gopass: cannot delete last field; use DeleteEntry")
 	}
 	values = append(values[:index], values[index+1:]...)
-	return w.commit(ctx, path, wireRevision, m, values, oldValuePaths(m))
+	return w.commitAndSync(ctx, entryPath, path, wireRevision, m, raw, values)
 }
 
-// DeleteEntry удаляет manifest после fresh lock-check, затем все его values.
+// DeleteEntry удаляет manifest после fresh lock-check, затем каталог bundle
+// одной командой и main entry. Manifest удаляется первым: после этого запись
+// уже не видна ни TUI, ни helper-у, а оставшиеся при сбое values недоступны
+// и удаляются командой gc.
 func (w ExecWriter) DeleteEntry(ctx context.Context, entryPath, wireRevision string) error {
 	unlock, err := w.lock(ctx, entryPath)
 	if err != nil {
@@ -169,7 +187,10 @@ func (w ExecWriter) DeleteEntry(ctx context.Context, entryPath, wireRevision str
 	if err := w.store().remove(ctx, path); err != nil {
 		return err
 	}
-	failed := w.cleanup(ctx, oldValuePaths(m))
+	failed := 0
+	if err := w.store().removeTree(ctx, bundleDir(m.BundleID)); err != nil {
+		failed++
+	}
 	if err := w.store().remove(ctx, entryPath); err != nil {
 		failed++
 	}
