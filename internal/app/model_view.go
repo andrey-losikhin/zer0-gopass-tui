@@ -3,6 +3,8 @@ package app
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func (m Model) listView() string {
@@ -24,7 +26,7 @@ func (m Model) listView() string {
 	return m.workspaceView(detail)
 }
 
-func (m Model) vaultView(height int) string {
+func (m Model) vaultView(width, height int) string {
 	var b strings.Builder
 	if m.mode == modeFilter {
 		fmt.Fprintf(&b, "%s\n\n", m.filter.View())
@@ -49,9 +51,10 @@ func (m Model) vaultView(height int) string {
 		b.WriteString(mutedStyle.Render("↑ ещё") + "\n")
 	}
 	for i := start; i < end; i++ {
-		line := "  " + m.filtered[i].Path
+		path := truncateMiddle(m.filtered[i].Path, width-2)
+		line := "  " + path
 		if i == m.cursor {
-			line = selectedStyle.Render("› " + m.filtered[i].Path)
+			line = selectedStyle.Render("› " + path)
 		}
 		b.WriteString(line + "\n")
 	}
@@ -59,4 +62,20 @@ func (m Model) vaultView(height int) string {
 		b.WriteString(mutedStyle.Render("↓ ещё") + "\n")
 	}
 	return b.String()
+}
+
+// truncateMiddle укорачивает строку до width ячеек, сохраняя начало и конец:
+// у длинных путей различается обычно хвост. Полный путь виден в карточке.
+func truncateMiddle(s string, width int) string {
+	const ellipsis = "…"
+	total := ansi.StringWidth(s)
+	if total <= width {
+		return s
+	}
+	if width <= 1 {
+		return ansi.Truncate(s, width, "")
+	}
+	head := (width - 1) / 2
+	tail := width - 1 - head
+	return ansi.Truncate(s, head, "") + ellipsis + ansi.TruncateLeft(s, total-tail, "")
 }

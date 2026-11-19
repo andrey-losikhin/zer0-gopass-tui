@@ -57,6 +57,7 @@ type Model struct {
 	bwDelete         *bitwardenDeletePrompt
 	deleteSyncPath   string
 	pendingUnlink    bool
+	pendingRelink    string
 	duplicates       duplicateState
 }
 
@@ -83,6 +84,12 @@ func loadEntriesCmd(ctx context.Context, lister gopass.Lister) tea.Cmd {
 
 // Update обрабатывает сообщения Bubble Tea.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case bitwardenUnlockRequestMsg:
+		return m, unlockBitwardenCmd(msg.reply)
+	case bitwardenUnlockFinishedMsg:
+		return m, nil
+	}
 	if updated, cmd, handled := m.updateBitwardenDelete(msg); handled {
 		return updated, cmd
 	}

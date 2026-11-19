@@ -43,7 +43,20 @@ func (m Model) updateCard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingUnlink = m.card.set.BitwardenSync && !m.card.editor.syncBitwarden
 		m.card.mode = cardView
 		m.card.editor = createModel{}
-		return m, verifyMutationCmd(m.ctx, m.lister, m.reader, m.card.entry, nil)
+		var notice error
+		if created.moveErr != nil {
+			notice = fmt.Errorf("поля сохранены, переименование не удалось: %w", created.moveErr)
+		}
+		if created.from != "" && created.path != created.from {
+			from := created.from
+			m.card.entry = created.path
+			if m.card.set.BitwardenSync {
+				// Relink до синхронизации, чтобы sync обновил уже переименованный элемент.
+				m.pendingRelink = from
+			}
+			notice = fmt.Errorf("запись переименована: %s", created.path)
+		}
+		return m, verifyMutationCmd(m.ctx, m.lister, m.reader, m.card.entry, notice)
 	}
 	if mutation, ok := msg.(mutationMsg); ok && !mutation.entryDelete {
 		var cleanup *gopass.CleanupError
@@ -55,6 +68,9 @@ func (m Model) updateCard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if verified, ok := msg.(mutationVerifiedMsg); ok {
 		m.card.loading = false
+		if verified.err != nil {
+			m.pendingRelink = ""
+		}
 		m.card.err = verified.err
 		m.card.adding = false
 		m.card.mode = cardView
@@ -65,15 +81,28 @@ func (m Model) updateCard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = verified.entries
 			m.filtered = filterEntries(m.entries, m.filter.Value())
 			m.notice = verified.notice
+			relinkFrom := m.pendingRelink
+			m.pendingRelink = ""
 			if m.pendingUnlink {
 				m.pendingUnlink = false
-				return m, findBitwardenCmd(m.ctx, m.bitwarden, m.card.entry)
+				linked := m.card.entry
+				if relinkFrom != "" {
+					linked = relinkFrom
+				}
+				return m, findBitwardenCmd(m.ctx, m.bitwarden, linked)
 			}
 			if m.pendingBitwarden {
 				m.pendingBitwarden = false
 				m.notice = errors.New("gopass сохранён; синхронизация Bitwarden…")
 				m.card.loading = true
-				return m, syncBitwardenCmd(m.ctx, m.bitwarden, m.reader, m.card.entry, verified.set)
+				sync := syncBitwardenCmd(m.ctx, m.bitwarden, m.reader, m.card.entry, verified.set)
+				if relinkFrom != "" {
+					sync = relinkAndSyncBitwardenCmd(m.ctx, m.bitwarden, relinkFrom, m.card.entry, sync)
+				}
+				return m, sync
+			}
+			if relinkFrom != "" {
+				return m, relinkBitwardenCmd(m.ctx, m.bitwarden, relinkFrom, m.card.entry)
 			}
 		}
 		return m, nil

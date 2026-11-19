@@ -166,3 +166,37 @@ func TestRenameInputAcceptsNavigationLetters(t *testing.T) {
 		t.Fatalf("mode=%v quitting=%v value=%q", m.mode, m.quitting, m.card.rename.Value())
 	}
 }
+
+func TestEditAllRenamesEntryAndSavesFields(t *testing.T) {
+	w := &fakeWriter{set: testSet()}
+	c := readyCard(w)
+	c, load, _ := c.updateKey(keyRunes("e"))
+	c, _, _ = c.update(load())
+	c, _, _ = c.updateKey(keyRunes("k"))
+	if c.editor.cursor != 0 {
+		t.Fatalf("path row is not reachable in edit mode: cursor=%d", c.editor.cursor)
+	}
+	c.editor.path.SetValue("work/renamed")
+	c.editor.fields[0].Value = "bob"
+	c, save, _ := c.updateKey(tea.KeyMsg{Type: tea.KeyCtrlS})
+	created, ok := save().(createdMsg)
+	if !ok || created.err != nil || created.from != "work/account" || created.path != "work/renamed" {
+		t.Fatalf("created = %#v", created)
+	}
+	if w.movedFrom != "work/account" || w.movedTo != "work/renamed" || len(w.replaced) == 0 || w.replaced[0].Value != "bob" {
+		t.Fatalf("moved %q -> %q replaced=%#v", w.movedFrom, w.movedTo, w.replaced)
+	}
+}
+
+func TestEditAllRenameOnlySkipsReplace(t *testing.T) {
+	w := &fakeWriter{set: testSet()}
+	c := readyCard(w)
+	c, load, _ := c.updateKey(keyRunes("e"))
+	c, _, _ = c.update(load())
+	c.editor.path.SetValue("work/renamed")
+	_, save, _ := c.updateKey(tea.KeyMsg{Type: tea.KeyCtrlS})
+	save()
+	if w.replaced != nil || w.movedTo != "work/renamed" {
+		t.Fatalf("replaced=%#v moved=%q", w.replaced, w.movedTo)
+	}
+}

@@ -41,7 +41,7 @@ func (m Model) workspaceView(detail string) string {
 		leftPanel, rightPanel = focusStyle, panelStyle
 	}
 	left := leftPanel.Width(leftWidth).Height(contentHeight).Render(
-		titleStyle.Render("ХРАНИЛИЩЕ") + "\n\n" + m.vaultView(contentHeight-4),
+		titleStyle.Render("ХРАНИЛИЩЕ") + "\n\n" + m.vaultView(leftWidth-2, contentHeight-4),
 	)
 	right := rightPanel.Width(rightWidth).Height(contentHeight).Render(detail)
 	help := mutedStyle.Render("  ←/h список • →/l форма • ↑/↓ выбрать • n новая • / поиск • d удалить • D дубликаты • q выход")

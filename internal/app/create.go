@@ -34,8 +34,11 @@ type createModel struct {
 
 type createdMsg struct {
 	path string
+	from string
 	set  gopass.FieldSet
 	err  error
+	// moveErr: поля сохранены под старым путём, но переименование не удалось.
+	moveErr error
 }
 
 func newCreate(ctx context.Context, writer gopass.Writer, lockedPath string) createModel {
@@ -126,7 +129,7 @@ func (c createModel) update(msg tea.KeyMsg) (createModel, tea.Cmd, bool) {
 	switch commandKey(msg) {
 	case "up", "k":
 		c.cursor = clampCursor(c.cursor-1, len(c.fields)+1)
-		if c.locked != "" && c.cursor == 0 {
+		if c.locked != "" && c.revision == "" && c.cursor == 0 {
 			c.cursor = 1
 		}
 	case "down", "j":
@@ -213,12 +216,19 @@ func (c createModel) save() (createModel, tea.Cmd, bool) {
 	c.loading = true
 	c.status = "Сохраняю зашифрованные поля…"
 	if c.locked != "" {
+		if c.revision != "" && c.path.Value() != c.locked {
+			return c, replaceAndMoveCmd(c.ctx, c.writer, c.locked, c.path.Value(), c.revision, selected, c.fieldsChanged()), false
+		}
 		if c.revision != "" {
 			return c, replaceBundleCmd(c.ctx, c.writer, c.path.Value(), c.revision, selected), false
 		}
 		return c, migrateBundleCmd(c.ctx, c.writer, c.path.Value(), selected), false
 	}
 	return c, createBundleCmd(c.ctx, c.writer, c.path.Value(), selected), false
+}
+
+func (c createModel) fieldsChanged() bool {
+	return c.syncBitwarden != c.initialSync || !slices.Equal(nonEmptyFields(c.fields), nonEmptyFields(c.initial))
 }
 
 func nonEmptyFields(fields []gopass.FieldValue) []gopass.FieldValue {

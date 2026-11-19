@@ -36,6 +36,8 @@ type bitwardenClient struct {
 	baseURL   string
 	client    *http.Client
 	configErr error
+	// server != nil: при недоступном локальном адресе bw serve поднимается сам.
+	server *bitwardenServer
 }
 
 type bitwardenItem struct {
@@ -87,7 +89,11 @@ func newBitwardenClient() bitwardenSyncer {
 		}
 	}
 	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return bitwardenClient{baseURL: strings.TrimRight(baseURL, "/"), client: client, configErr: err}
+	var server *bitwardenServer
+	if err == nil && parsed.Scheme == "http" && parsed.Port() != "" {
+		server = &bitwardenServer{port: parsed.Port()}
+	}
+	return bitwardenClient{baseURL: strings.TrimRight(baseURL, "/"), client: client, configErr: err, server: server}
 }
 
 func (b bitwardenClient) Upsert(ctx context.Context, path string, fields []gopass.FieldValue) error {
@@ -113,6 +119,27 @@ func (b bitwardenClient) Upsert(ctx context.Context, path string, fields []gopas
 }
 
 func (b bitwardenClient) ensureUnlocked(ctx context.Context) error {
+	status, err := b.status(ctx)
+	if err != nil && b.server != nil && isBitwardenUnreachable(err) {
+		reachable := func(ctx context.Context) bool {
+			_, err := b.status(ctx)
+			return err == nil
+		}
+		if err := b.server.start(ctx, reachable); err != nil {
+			return err
+		}
+		status, err = b.status(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	if status != "unlocked" {
+		return fmt.Errorf("Bitwarden vault заблокирован: остановите bw serve, выполните `export BW_SESSION=\"$(bw unlock --raw)\"` и запустите bw serve снова")
+	}
+	return nil
+}
+
+func (b bitwardenClient) status(ctx context.Context) (string, error) {
 	var response struct {
 		Success bool `json:"success"`
 		Data    struct {
@@ -122,12 +149,12 @@ func (b bitwardenClient) ensureUnlocked(ctx context.Context) error {
 		} `json:"data"`
 	}
 	if err := b.request(ctx, http.MethodGet, "/status", nil, &response); err != nil {
-		return err
+		return "", err
 	}
-	if !response.Success || response.Data.Template.Status != "unlocked" {
-		return fmt.Errorf("Bitwarden vault заблокирован: остановите bw serve, выполните `export BW_SESSION=\"$(bw unlock --raw)\"` и запустите bw serve снова")
+	if !response.Success {
+		return "", nil
 	}
-	return nil
+	return response.Data.Template.Status, nil
 }
 
 // find сначала использует серверный поиск `?search=` (он сравнивает имя

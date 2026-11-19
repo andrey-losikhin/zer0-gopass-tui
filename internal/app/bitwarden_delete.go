@@ -46,6 +46,17 @@ func relinkBitwardenCmd(ctx context.Context, syncer bitwardenSyncer, oldPath, ne
 	}
 }
 
+// relinkAndSyncBitwardenCmd переносит связанный элемент на новый путь и только
+// затем синхронизирует поля, иначе Upsert создал бы дубликат.
+func relinkAndSyncBitwardenCmd(ctx context.Context, syncer bitwardenSyncer, oldPath, newPath string, sync tea.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		if err := syncer.Relink(ctx, oldPath, newPath); err != nil {
+			return bitwardenSyncedMsg{err: err}
+		}
+		return sync()
+	}
+}
+
 // updateBitwardenDelete обрабатывает поиск, подтверждение и результат удаления.
 func (m Model) updateBitwardenDelete(msg tea.Msg) (Model, tea.Cmd, bool) {
 	switch msg := msg.(type) {

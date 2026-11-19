@@ -62,7 +62,7 @@ Run `zer0-gopass-tui`, then use:
 | `d` | Delete after confirmation |
 | `D` | Check for reused passwords (decrypts all passwords after confirmation) |
 | `r` / `e` | Reveal a secret field / open the editor (card) |
-| `R` / `c` | Rename the entry / clone it as a template (card) |
+| `R` / `c` | Rename the entry / clone it as a template (card); the editor (`e`) also edits the entry name |
 | `a` | Add a field (card or form) |
 | `g`, then `p` | Open the password generator on a secret field; `p` cycles presets |
 | `Ctrl+R` | Reveal or mask a secret during manual input |
@@ -93,8 +93,11 @@ is disabled, the application shows the linked Bitwarden item and moves it to
 the Bitwarden trash only after `y`. A Bitwarden failure does not roll back the
 `gopass` write.
 
-The helper starts `bw serve` on loopback, runs the TUI, and stops the server it
-created:
+Bitwarden is not unlocked at startup. On the first Bitwarden operation, if
+nothing answers on the configured loopback HTTP URL, the application hands the
+terminal to `bw unlock --raw`, then starts `bw serve` on that port with the
+session key in its environment and stops it on exit. An already running,
+unlocked `bw serve` is used as is. The helper only sets the port:
 
 ```sh
 ./scripts/run-with-bitwarden

@@ -18,7 +18,12 @@ func Run(stdin io.Reader, stdout io.Writer, lister gopass.Lister, reader gopass.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	p := tea.NewProgram(NewModel(ctx, lister, reader, writer), tea.WithInput(stdin), tea.WithOutput(stdout))
+	model := NewModel(ctx, lister, reader, writer)
+	p := tea.NewProgram(model, tea.WithInput(stdin), tea.WithOutput(stdout))
+	if client, ok := model.bitwarden.(bitwardenClient); ok && client.server != nil {
+		client.server.send = p.Send
+		defer client.server.close()
+	}
 	_, err := p.Run()
 	if err != nil {
 		return err

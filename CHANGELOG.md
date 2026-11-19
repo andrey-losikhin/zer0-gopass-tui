@@ -19,5 +19,9 @@ intended to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The main entry of a field bundle now starts with the password.
 - The list preview no longer decrypts secret fields.
 - Old revisions are removed with one `gopass rm -r` instead of one command per value.
+- The card editor can rename the entry; field changes are saved before the move.
+- Bitwarden is unlocked on the first synchronization instead of at startup;
+  the application starts and stops `bw serve` itself.
+- Long entry names are shortened in the middle in the list; the card shows the full name.
 
 [Unreleased]: https://github.com/andrey-losikhin/zer0-gopass-tui/commits/main

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +14,27 @@ func replaceBundleCmd(ctx context.Context, writer gopass.Writer, path, revision 
 	return func() tea.Msg {
 		set, err := writer.ReplaceBundle(ctx, path, revision, fields)
 		return createdMsg{path: path, set: set, err: err}
+	}
+}
+
+// replaceAndMoveCmd сохраняет поля под старым путём и затем переименовывает
+// запись: при сбое переноса изменения полей уже не теряются.
+func replaceAndMoveCmd(ctx context.Context, writer gopass.Writer, from, to, revision string, fields []gopass.FieldValue, replace bool) tea.Cmd {
+	return func() tea.Msg {
+		if replace {
+			set, err := writer.ReplaceBundle(ctx, from, revision, fields)
+			if err != nil {
+				return createdMsg{path: from, set: set, err: err}
+			}
+			revision = set.Revision
+		}
+		if err := writer.MoveEntry(ctx, from, to, revision); err != nil {
+			if replace {
+				return createdMsg{path: from, from: from, moveErr: err}
+			}
+			return createdMsg{path: from, err: fmt.Errorf("переименование: %w", err)}
+		}
+		return createdMsg{path: to, from: from}
 	}
 }
 
